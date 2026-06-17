@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "astock-data": {
+      "command": "python",
+      "args": ["-m", "astock_data.mcp.server"],
+      "transport": "stdio"
+    }
+  }
+}

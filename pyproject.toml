@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astock-data"
+version = "0.1.0"
+description = "Pure A-share market data source package."
+requires-python = ">=3.10"
+dependencies = [
+    "mootdx",
+    "requests",
+    "pandas",
+    "stockstats",
+    "pydantic",
+    "pydantic-settings",
+    "platformdirs>=4.0",
+    "fastmcp",
+    "typer",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "requests-mock",
+]
+
+[project.scripts]
+astock-data = "astock_data.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["astock_data*"]
+
+[tool.setuptools.package-data]
+astock_data = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "unit",
+    "integration",
+    "live",
+    "public_entrypoints: guards that all ticker-consuming services route through the common resolver",
+]
