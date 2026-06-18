@@ -6,6 +6,7 @@ Clients do ONLY transport + parsing; no business validation lives here.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Optional
 
 import requests
@@ -13,6 +14,16 @@ import requests
 from ..errors import DataSourceError
 
 __all__ = ["TencentClient"]
+
+
+_INDEX_CODES: tuple[tuple[str, str], ...] = (
+    ("sh", "sh000001"),
+    ("sz", "sz399001"),
+    ("cyb", "sz399006"),
+    ("kc50", "sh000688"),
+    ("hs300", "sh000300"),
+    ("zz500", "sh000905"),
+)
 
 
 def _market_prefix(code: str) -> str:
@@ -39,6 +50,15 @@ def _to_float(value: str) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _to_optional_float(value: object) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 # Indices into the ``~``-delimited Tencent quote payload. These mirror the
@@ -118,6 +138,40 @@ class TencentClient:
             return {}
 
         prefixed = [f"{_market_prefix(c)}{c}" for c in codes]
+        return self._quote_prefixed(prefixed)
+
+    def index_snapshots(self) -> dict[str, dict]:
+        """Fetch fixed market index snapshots from Tencent batch quotes."""
+
+        rows = self._quote_prefixed(
+            [code for _, code in _INDEX_CODES], keep_prefix=True
+        )
+        result: dict[str, dict] = {}
+        for key, prefixed_code in _INDEX_CODES:
+            row = rows.get(prefixed_code)
+            if not row:
+                continue
+            price = _to_optional_float(row.get("price"))
+            last_close = _to_optional_float(row.get("last_close"))
+            change = None
+            if price is not None and last_close is not None:
+                change = price - last_close
+            result[key] = {
+                "name": row.get("name", ""),
+                "price": price,
+                "change": change,
+                "change_pct": _to_optional_float(row.get("change_pct")),
+            }
+        if not result:
+            raise DataSourceError("Tencent index quote returned no usable rows")
+        return result
+
+    def _quote_prefixed(
+        self, prefixed: list[str], *, keep_prefix: bool = False
+    ) -> dict[str, dict]:
+        if not prefixed:
+            return {}
+
         url = self.QUOTE_URL + ",".join(prefixed)
 
         try:
@@ -140,7 +194,7 @@ class TencentClient:
             ) from exc
 
         try:
-            return self._parse(raw)
+            return self._parse(raw, keep_prefix=keep_prefix)
         except DataSourceError:
             raise
         except Exception as exc:  # malformed payload
@@ -149,7 +203,7 @@ class TencentClient:
             ) from exc
 
     @staticmethod
-    def _parse(raw: str) -> dict[str, dict]:
+    def _parse(raw: str, *, keep_prefix: bool = False) -> dict[str, dict]:
         """Parse the raw GBK Tencent payload into a per-code dict."""
         result: dict[str, dict] = {}
         for line in raw.strip().split(";"):
@@ -164,8 +218,11 @@ class TencentClient:
             if len(vals) < 53:
                 # Skip lines that don't carry full quote fields.
                 continue
-            # strip sh/sz/bj market prefix -> bare 6-digit code
-            code = prefixed_key[2:] if len(prefixed_key) > 2 else prefixed_key
+            code = (
+                prefixed_key
+                if keep_prefix
+                else prefixed_key[2:] if len(prefixed_key) > 2 else prefixed_key
+            )
 
             entry: dict = {}
             for field, idx in _FIELD_INDEXES.items():
@@ -175,3 +232,28 @@ class TencentClient:
                     entry[field] = vals[idx]
             result[code] = entry
         return result
+
+    @staticmethod
+    def normalize_market_board_rows(rows: list[Mapping[str, object]]) -> list[dict]:
+        """Normalize Tencent market-board-like rows into quote-row shape."""
+
+        normalized: list[dict] = []
+        for row in rows:
+            code = str(row.get("code") or row.get("symbol") or "").strip()
+            if code.startswith(("sh", "sz", "bj")):
+                code = code[2:]
+            if not code:
+                continue
+            normalized.append(
+                {
+                    "code": code,
+                    "name": str(row.get("name") or row.get("n") or "").strip(),
+                    "close": _to_optional_float(
+                        row.get("price") or row.get("p") or row.get("trade")
+                    ),
+                    "change_pct": _to_optional_float(
+                        row.get("change_pct") or row.get("zdf") or row.get("pct")
+                    ),
+                }
+            )
+        return normalized

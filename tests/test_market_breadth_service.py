@@ -4,7 +4,7 @@ import datetime as dt
 
 import pytest
 
-from astock_data.errors import MarketValidationError
+from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.models import OHLCVBar, StockDataResult, Ticker
 from astock_data.services.market_breadth import get_market_breadth
 
@@ -31,6 +31,14 @@ class FakeEastmoney:
     def clist_all(self, *, fields: str = "") -> list[dict]:
         self.fields = fields
         return self.rows
+
+
+class FailingEastmoney(FakeEastmoney):
+    def index_snapshot(self, secid: str) -> dict:
+        raise DataSourceError("eastmoney down")
+
+    def clist_all(self, *, fields: str = "") -> list[dict]:
+        raise DataSourceError("eastmoney clist down")
 
 
 def _bars(code: str, closes: list[float], start: str = "2026-06-15") -> StockDataResult:
@@ -74,6 +82,115 @@ def test_market_breadth_counts_limits_and_returns_indices() -> None:
     assert result.raw["sources"]["board_ladders"] == "derived.kline.threshold"
 
 
+def test_eastmoney_failure_uses_tencent_indices_and_sina_rows(monkeypatch) -> None:
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {
+                key: {"name": f"{key}指数", "price": 1000.0, "change": 1.0, "change_pct": 0.1}
+                for key in ["sh", "sz", "cyb", "kc50", "hs300", "zz500"]
+            }
+
+    class FakeSina:
+        def market_all(self) -> list[dict]:
+            return [
+                {"code": "000001", "name": "平安银行", "close": 10.98, "change_pct": 9.8},
+                {"code": "688017", "name": "绿的谐波", "close": 8.0, "change_pct": -19.5},
+            ]
+
+        def index_snapshots(self) -> dict[str, dict]:
+            raise AssertionError("Sina indices should not be used when Tencent succeeds")
+
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", FakeTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", FakeSina)
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FailingEastmoney([]),
+        stock_data_func=lambda *args: _bars(args[0], [10, 11]),
+    )
+
+    assert result.raw["sources"]["indices"] == "tencent"
+    assert result.raw["sources"]["limit_stats"] == "sina"
+    assert result.limit_stats.limit_up_count == 1
+    assert result.limit_stats.limit_down_count == 1
+    assert any("fallback used tencent" in warning for warning in result.warnings)
+    assert any("fallback used sina" in warning for warning in result.warnings)
+
+
+def test_tencent_failure_uses_sina_indices(monkeypatch) -> None:
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            raise DataSourceError("tencent down")
+
+    class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {
+                key: {"name": f"{key}指数", "price": 1000.0, "change": 1.0, "change_pct": 0.1}
+                for key in ["sh", "sz", "cyb", "kc50", "hs300", "zz500"]
+            }
+
+        def market_all(self) -> list[dict]:
+            return [{"code": "000001", "name": "平安银行", "close": 10.0, "change_pct": 0.0}]
+
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", FakeTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", FakeSina)
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FailingEastmoney([]),
+        stock_data_func=lambda *args: _bars(args[0], []),
+    )
+
+    assert result.raw["sources"]["indices"] == "sina"
+    assert result.raw["sources"]["limit_stats"] == "sina"
+    assert any("fallback used sina" in warning for warning in result.warnings)
+
+
+def test_partial_result_skips_board_ladders_when_rows_fail(monkeypatch) -> None:
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            raise AssertionError("Eastmoney indices should succeed first")
+
+    class FakeSina:
+        def market_all(self) -> list[dict]:
+            raise DataSourceError("sina down")
+
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", FakeTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", FakeSina)
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FakeEastmoney([]),
+        stock_data_func=lambda *args: _bars(args[0], []),
+    )
+
+    assert result.raw["sources"]["indices"] == "eastmoney"
+    assert result.raw["sources"]["limit_stats"] is None
+    assert result.raw["sources"]["board_ladders"] is None
+    assert result.board_ladders == {}
+    assert result.limit_stats.limit_up_count == 0
+    assert any("board_ladders skipped" in warning for warning in result.warnings)
+
+
+def test_all_sources_failure_raises_typed_error(monkeypatch) -> None:
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            raise DataSourceError("tencent down")
+
+    class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            raise DataSourceError("sina indices down")
+
+        def market_all(self) -> list[dict]:
+            raise DataSourceError("sina rows down")
+
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", FakeTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", FakeSina)
+
+    with pytest.raises(DataSourceError, match="All market breadth index and full-market quote sources failed"):
+        get_market_breadth("2026-06-17", eastmoney=FailingEastmoney([]))
+
+
 def test_board_ladder_derives_three_boards_and_breaks_chain() -> None:
     rows = [{"f12": "688017", "f14": "绿的谐波", "f2": 13.31, "f3": 20.0}]
     eastmoney = FakeEastmoney(rows)
@@ -111,7 +228,11 @@ def test_invalid_date_rejected() -> None:
 
 def test_no_persistent_state_file_created(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
-    result = get_market_breadth("2026-06-17", eastmoney=FakeEastmoney([]), stock_data_func=lambda *args: _bars(args[0], []))
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FakeEastmoney([{"f12": "000001", "f14": "平安银行", "f2": 10.0, "f3": 0.0}]),
+        stock_data_func=lambda *args: _bars(args[0], []),
+    )
 
     assert result.board_ladders == {}
     assert not list(tmp_path.glob("*.sqlite"))

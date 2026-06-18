@@ -114,6 +114,66 @@ def test_kline_json_error_raises(requests_mocker) -> None:
         SinaClient().kline("688017")
 
 
+def test_index_snapshots_parse_short_quote_payload(requests_mocker) -> None:
+    payload = (
+        'var hq_str_s_sh000001="上证指数,3000.00,10.00,0.33,100,1000";'
+        'var hq_str_s_sz399001="深证成指,10000.00,100.00,1.01,100,1000";'
+        'var hq_str_s_sz399006="创业板指,2000.00,20.00,1.01,100,1000";'
+        'var hq_str_s_sh000688="科创50,900.00,-10.00,-1.10,100,1000";'
+        'var hq_str_s_sh000300="沪深300,4000.00,20.00,0.50,100,1000";'
+        'var hq_str_s_sh000905="中证500,6000.00,-10.00,-0.17,100,1000";'
+    )
+    requests_mocker.get(
+        "https://hq.sinajs.cn/list=s_sh000001,s_sz399001,s_sz399006,s_sh000688,s_sh000300,s_sh000905",
+        content=payload.encode("gbk"),
+    )
+
+    result = SinaClient().index_snapshots()
+
+    assert list(result) == ["sh", "sz", "cyb", "kc50", "hs300", "zz500"]
+    assert result["sh"] == {
+        "name": "上证指数",
+        "price": 3000.0,
+        "change": 10.0,
+        "change_pct": 0.33,
+    }
+
+
+def test_index_snapshots_http_error_raises(requests_mocker) -> None:
+    requests_mocker.get(
+        "https://hq.sinajs.cn/list=s_sh000001,s_sz399001,s_sz399006,s_sh000688,s_sh000300,s_sh000905",
+        exc=requests.ConnectionError("boom"),
+    )
+
+    with pytest.raises(DataSourceError):
+        SinaClient().index_snapshots()
+
+
+def test_market_page_normalizes_rows(requests_mocker) -> None:
+    captured = {}
+
+    def _matcher(request, context):
+        captured["qs"] = request.qs
+        return json.dumps(
+            [
+                {"symbol": "sh600000", "name": "浦发银行", "trade": "10.1", "changepercent": "9.9"},
+                {"code": "sz300001", "name": "特锐德", "price": "12.0", "change_pct": "20.0"},
+            ],
+            ensure_ascii=False,
+        )
+
+    requests_mocker.get(SinaClient.MARKET_CENTER_URL, text=_matcher)
+
+    rows = SinaClient().market_page(page=2, page_size=2)
+
+    assert captured["qs"]["page"] == ["2"]
+    assert captured["qs"]["num"] == ["2"]
+    assert rows == [
+        {"code": "600000", "name": "浦发银行", "close": 10.1, "change_pct": 9.9},
+        {"code": "300001", "name": "特锐德", "close": 12.0, "change_pct": 20.0},
+    ]
+
+
 # ---------------------------------------------------------------------------
 # financial_report
 # ---------------------------------------------------------------------------

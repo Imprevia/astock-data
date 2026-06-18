@@ -21,6 +21,22 @@ def _load_tencent_fixture() -> bytes:
     return (FIXTURES / "tencent_quote.txt").read_bytes()
 
 
+def _tencent_index_line(
+    symbol: str,
+    name: str,
+    price: str,
+    last_close: str,
+    change_pct: str,
+) -> str:
+    values = [""] * 53
+    values[1] = name
+    values[2] = symbol[2:]
+    values[3] = price
+    values[4] = last_close
+    values[32] = change_pct
+    return 'v_' + symbol + '="' + "~".join(values) + '";'
+
+
 pytestmark = pytest.mark.unit
 
 
@@ -94,6 +110,29 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
     assert bank["limit_down"] == pytest.approx(9.00)
 
 
+def test_index_snapshots_parse_gbk_payload(requests_mocker) -> None:
+    payload = (
+        _tencent_index_line("sh000001", "上证指数", "3000.00", "2990.00", "0.33")
+        + _tencent_index_line("sz399001", "深证成指", "10000.00", "9900.00", "1.01")
+        + _tencent_index_line("sz399006", "创业板指", "2000.00", "1980.00", "1.01")
+        + _tencent_index_line("sh000688", "科创50", "900.00", "910.00", "-1.10")
+        + _tencent_index_line("sh000300", "沪深300", "4000.00", "3980.00", "0.50")
+        + _tencent_index_line("sh000905", "中证500", "6000.00", "6010.00", "-0.17")
+    )
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000688,sh000300,sh000905",
+        content=payload.encode("gbk"),
+    )
+
+    result = TencentClient().index_snapshots()
+
+    assert list(result) == ["sh", "sz", "cyb", "kc50", "hs300", "zz500"]
+    assert result["sh"]["name"] == "上证指数"
+    assert result["sh"]["price"] == pytest.approx(3000.0)
+    assert result["sh"]["change"] == pytest.approx(10.0)
+    assert result["sh"]["change_pct"] == pytest.approx(0.33)
+
+
 def test_quote_url_uses_correct_prefixes(requests_mocker) -> None:
     captured = {}
 
@@ -155,6 +194,29 @@ def test_quote_gbk_decode_failure_raises_datasource_error(requests_mocker) -> No
     client = TencentClient()
     with pytest.raises(DataSourceError):
         client.quote(["688017"])
+
+
+def test_index_snapshots_http_error_raises_datasource_error(requests_mocker) -> None:
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sh000001,sz399001,sz399006,sh000688,sh000300,sh000905",
+        exc=requests.ConnectionError("boom"),
+    )
+    with pytest.raises(DataSourceError):
+        TencentClient().index_snapshots()
+
+
+def test_normalize_market_board_rows() -> None:
+    rows = TencentClient.normalize_market_board_rows(
+        [
+            {"code": "sh600000", "name": "浦发银行", "price": "10.1", "zdf": "9.9"},
+            {"symbol": "sz300001", "n": "特锐德", "p": "12.0", "pct": "20.0"},
+        ]
+    )
+
+    assert rows == [
+        {"code": "600000", "name": "浦发银行", "close": 10.1, "change_pct": 9.9},
+        {"code": "300001", "name": "特锐德", "close": 12.0, "change_pct": 20.0},
+    ]
 
 
 def test_injected_session_is_used(requests_mocker) -> None:

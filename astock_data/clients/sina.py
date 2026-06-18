@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Mapping
 from typing import Optional
 
 import requests
@@ -44,6 +45,15 @@ _KLINE_SCALE = {
     "week": "1680",
     "month": "7200",
 }
+
+_INDEX_SYMBOLS: tuple[tuple[str, str], ...] = (
+    ("sh", "s_sh000001"),
+    ("sz", "s_sz399001"),
+    ("cyb", "s_sz399006"),
+    ("kc50", "s_sh000688"),
+    ("hs300", "s_sh000300"),
+    ("zz500", "s_sh000905"),
+)
 
 
 def _shsz_prefix(code: str) -> str:
@@ -93,6 +103,11 @@ class SinaClient:
     NEWS_URL = (
         "https://vip.stock.finance.sina.com.cn/corp/view/"
         "vCB_AllNewsStock.php"
+    )
+    QUOTE_URL = "https://hq.sinajs.cn/list="
+    MARKET_CENTER_URL = (
+        "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "Market_Center.getHQNodeData"
     )
 
     def __init__(
@@ -161,6 +176,110 @@ class SinaClient:
                 }
             )
         return rows
+
+    # ------------------------------------------------------------------
+    # Quote snapshots and market rows (market breadth fallback)
+    # ------------------------------------------------------------------
+
+    def index_snapshots(self) -> dict[str, dict]:
+        """Fetch fixed index quote snapshots from Sina short quote format."""
+
+        try:
+            resp = self.session.get(
+                self.QUOTE_URL + ",".join(symbol for _, symbol in _INDEX_SYMBOLS),
+                headers={"User-Agent": _USER_AGENT, "Referer": "https://finance.sina.com.cn/"},
+                timeout=self._timeout,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise DataSourceError(f"Sina index quote request failed: {exc}") from exc
+
+        try:
+            text = resp.content.decode("gbk")
+        except (UnicodeDecodeError, LookupError) as exc:
+            raise DataSourceError(f"Sina index quote GBK decode failed: {exc}") from exc
+
+        parsed = self._parse_short_quotes(text)
+        result: dict[str, dict] = {}
+        for key, symbol in _INDEX_SYMBOLS:
+            row = parsed.get(symbol)
+            if row:
+                result[key] = row
+        if not result:
+            raise DataSourceError("Sina index quote returned no usable rows")
+        return result
+
+    def market_page(self, *, page: int = 1, page_size: int = 80) -> list[dict]:
+        """Fetch one Sina A-share market page normalized for limit statistics."""
+
+        params = {
+            "page": str(page),
+            "num": str(page_size),
+            "sort": "symbol",
+            "asc": "1",
+            "node": "hs_a",
+            "symbol": "",
+            "_s_r_a": "page",
+        }
+        data = self._get_json(self.MARKET_CENTER_URL, params=params)
+        if not isinstance(data, list):
+            return []
+        return self.normalize_market_rows(item for item in data if isinstance(item, Mapping))
+
+    def market_all(self, *, page_size: int = 80, max_pages: int = 80) -> list[dict]:
+        """Fetch Sina A-share market rows with a conservative page cap."""
+
+        rows: list[dict] = []
+        for page in range(1, max_pages + 1):
+            page_rows = self.market_page(page=page, page_size=page_size)
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            if len(page_rows) < page_size:
+                break
+        return rows
+
+    @staticmethod
+    def _parse_short_quotes(raw: str) -> dict[str, dict]:
+        rows: dict[str, dict] = {}
+        for line in raw.strip().split(";"):
+            if "=" not in line or '"' not in line:
+                continue
+            symbol = line.split("=", 1)[0].split("hq_str_", 1)[-1].strip()
+            payload = line.split('"', 2)[1]
+            values = payload.split(",")
+            if len(values) < 4 or not values[0]:
+                continue
+            rows[symbol] = {
+                "name": values[0],
+                "price": _to_float(values[1]),
+                "change": _to_float(values[2]),
+                "change_pct": _to_float(values[3]),
+            }
+        return rows
+
+    @staticmethod
+    def normalize_market_rows(rows: object) -> list[dict]:
+        """Normalize Sina market-center rows into quote-row shape."""
+
+        normalized: list[dict] = []
+        for row in rows:
+            if not isinstance(row, Mapping):
+                continue
+            code = str(row.get("code") or row.get("symbol") or "").strip()
+            if code.startswith(("sh", "sz", "bj")):
+                code = code[2:]
+            if not code:
+                continue
+            normalized.append(
+                {
+                    "code": code,
+                    "name": str(row.get("name") or "").strip(),
+                    "close": _to_float(row.get("trade") or row.get("price")),
+                    "change_pct": _to_float(row.get("changepercent") or row.get("change_pct")),
+                }
+            )
+        return normalized
 
     # ------------------------------------------------------------------
     # Financial reports (balance / income / cashflow)

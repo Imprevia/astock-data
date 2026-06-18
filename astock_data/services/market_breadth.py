@@ -6,7 +6,9 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from astock_data.clients.eastmoney import EastmoneyClient
-from astock_data.errors import MarketValidationError
+from astock_data.clients.sina import SinaClient
+from astock_data.clients.tencent import TencentClient
+from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.models import (
     BoardItem,
     IndexSnapshot,
@@ -25,6 +27,7 @@ _INDEX_SECIDS: tuple[tuple[str, str, str], ...] = (
     ("zz500", "中证500", "1.000905"),
 )
 _DERIVED_WARNING = "board_ladders are derived from K-line threshold rules and may differ from vendor terminal口径"
+_BOARD_SKIP_WARNING = "board_ladders skipped because no current limit-up stock set was available"
 _SUPPORTED_KLINE_PREFIXES = ("0", "3", "6", "8")
 _DEFAULT_LOOKBACK_DAYS = 20
 
@@ -101,18 +104,119 @@ def _is_limit_down(row: Mapping[str, Any]) -> bool:
 def _index_snapshot(key: str, fallback_name: str, row: Mapping[str, Any]) -> IndexSnapshot:
     return IndexSnapshot(
         key=key,
-        name=str(row.get("f58") or fallback_name),
-        price=_to_float(row.get("f43")),
-        change=_to_float(row.get("f169") if row.get("f169") not in (None, "", "-") else row.get("f60")),
-        change_pct=_to_float(row.get("f170")),
+        name=str(row.get("f58") or row.get("name") or fallback_name),
+        price=_to_float(row.get("f43") if "f43" in row else row.get("price")),
+        change=_to_float(
+            row.get("f169")
+            if row.get("f169") not in (None, "", "-")
+            else row.get("f60") if "f60" in row else row.get("change")
+        ),
+        change_pct=_to_float(
+            row.get("f170") if "f170" in row else row.get("change_pct")
+        ),
     )
 
 
 def _fetch_indices(eastmoney: EastmoneyClient) -> list[IndexSnapshot]:
     indices: list[IndexSnapshot] = []
     for key, name, secid in _INDEX_SECIDS:
-        indices.append(_index_snapshot(key, name, eastmoney.index_snapshot(secid)))
+        row = eastmoney.index_snapshot(secid)
+        if not row:
+            raise DataSourceError(f"Eastmoney index source returned no row for {secid}")
+        indices.append(_index_snapshot(key, name, row))
     return indices
+
+
+def _snapshots_from_mapping(rows: Mapping[str, Mapping[str, Any]]) -> list[IndexSnapshot]:
+    indices: list[IndexSnapshot] = []
+    for key, fallback_name, _ in _INDEX_SECIDS:
+        row = rows.get(key)
+        if row is not None:
+            indices.append(_index_snapshot(key, fallback_name, row))
+    return indices
+
+
+def _fallback_warning(capability: str, failed: str, fallback: str, exc: Exception) -> str:
+    return f"{capability} source {failed} failed ({exc}); fallback used {fallback}"
+
+
+def _failure_warning(capability: str, source: str, exc: Exception) -> str:
+    return f"{capability} source {source} failed ({exc})"
+
+
+def _fetch_indices_with_fallbacks(
+    eastmoney: EastmoneyClient,
+    tencent: TencentClient,
+    sina: SinaClient,
+    warnings: list[str],
+) -> tuple[list[IndexSnapshot], str | None]:
+    failures: list[tuple[str, Exception]] = []
+    try:
+        indices = _fetch_indices(eastmoney)
+        if len(indices) == len(_INDEX_SECIDS):
+            return indices, "eastmoney"
+        raise DataSourceError("Eastmoney index source returned incomplete rows")
+    except Exception as exc:
+        failures.append(("eastmoney", exc))
+
+    for source, fetch in (
+        ("tencent", tencent.index_snapshots),
+        ("sina", sina.index_snapshots),
+    ):
+        try:
+            indices = _snapshots_from_mapping(fetch())
+            if len(indices) == len(_INDEX_SECIDS):
+                for failed, exc in failures:
+                    warnings.append(_fallback_warning("indices", failed, source, exc))
+                return indices, source
+            raise DataSourceError(f"{source} index source returned incomplete rows")
+        except Exception as exc:
+            failures.append((source, exc))
+
+    for source, exc in failures:
+        warnings.append(_failure_warning("indices", source, exc))
+    return [], None
+
+
+def _fetch_limit_rows_with_fallbacks(
+    eastmoney: EastmoneyClient,
+    sina: SinaClient,
+    warnings: list[str],
+) -> tuple[list[dict], str | None]:
+    failures: list[tuple[str, Exception]] = []
+    try:
+        rows = eastmoney.clist_all(fields="f12,f14,f2,f3,f6,f8")
+        if rows:
+            return rows, "eastmoney"
+        raise DataSourceError("Eastmoney clist returned no rows")
+    except Exception as exc:
+        failures.append(("eastmoney", exc))
+
+    failures.append(
+        (
+            "tencent",
+            DataSourceError(
+                "Tencent market board endpoint skipped because spike returned HTTP 400"
+            ),
+        )
+    )
+
+    try:
+        rows = sina.market_all()
+        if rows:
+            for failed, exc in failures:
+                warnings.append(_fallback_warning("limit_stats", failed, "sina", exc))
+            warnings.append(
+                "limit_stats fallback used Sina market pagination; repeated calls may trigger Sina IP throttling"
+            )
+            return rows, "sina"
+        raise DataSourceError("Sina market pagination returned no rows")
+    except Exception as exc:
+        failures.append(("sina", exc))
+
+    for source, exc in failures:
+        warnings.append(_failure_warning("limit_stats", source, exc))
+    return [], None
 
 
 def _count_limits(rows: list[dict]) -> LimitStats:
@@ -120,6 +224,10 @@ def _count_limits(rows: list[dict]) -> LimitStats:
         limit_up_count=sum(1 for row in rows if _is_limit_up(row)),
         limit_down_count=sum(1 for row in rows if _is_limit_down(row)),
     )
+
+
+def _has_limit_up_rows(rows: list[dict]) -> bool:
+    return any(_is_limit_up(row) for row in rows)
 
 
 def _is_bar_limit_up(previous_close: float, current_close: float, code: str, name: str) -> bool:
@@ -195,22 +303,41 @@ def get_market_breadth(
 ) -> MarketBreadthResult:
     target = _target_date(date)
     client = eastmoney or EastmoneyClient()
+    tencent = TencentClient()
+    sina = SinaClient()
     warnings = [_DERIVED_WARNING]
-    rows = client.clist_all(fields="f12,f14,f2,f3,f6,f8")
+
+    indices, index_source = _fetch_indices_with_fallbacks(client, tencent, sina, warnings)
+    rows, row_source = _fetch_limit_rows_with_fallbacks(client, sina, warnings)
+    if index_source is None and row_source is None:
+        raise DataSourceError("All market breadth index and full-market quote sources failed")
+
+    if rows and _has_limit_up_rows(rows):
+        board_ladders = _derive_board_ladders(rows, target, stock_data_func, warnings)
+        board_source = "derived.kline.threshold"
+    else:
+        warnings.append(_BOARD_SKIP_WARNING)
+        board_ladders = {}
+        board_source = None
+
     return MarketBreadthResult(
-        source="eastmoney+derived",
+        source=(
+            "market-breadth:fallback"
+            if index_source != "eastmoney" or row_source != "eastmoney"
+            else "eastmoney+derived"
+        ),
         retrieved_at=_now(),
         date=target.isoformat(),
-        indices=_fetch_indices(client),
+        indices=indices,
         limit_stats=_count_limits(rows),
-        board_ladders=_derive_board_ladders(rows, target, stock_data_func, warnings),
+        board_ladders=board_ladders,
         description="Market breadth snapshot with fixed-index quotes, limit counts, and derived board ladders.",
         warnings=warnings,
         raw={
             "sources": {
-                "indices": "eastmoney.push2.stock.get",
-                "limit_stats": "eastmoney.push2.clist.get",
-                "board_ladders": "derived.kline.threshold",
+                "indices": index_source,
+                "limit_stats": row_source,
+                "board_ladders": board_source,
             },
             "limit_row_count": len(rows),
         },
