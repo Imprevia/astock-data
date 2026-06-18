@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from astock_data.models import (
+    BoardItem,
     ConceptBlock,
     ConceptBlocksResult,
     FinancialRow,
@@ -16,10 +17,13 @@ from astock_data.models import (
     GlobalNewsResult,
     HotStockItem,
     HotStocksResult,
+    IndexSnapshot,
     IndicatorPoint,
     IndicatorResult,
     NewsItem,
     NewsResult,
+    LimitStats,
+    MarketBreadthResult,
     OHLCVBar,
     Quote,
     ResultBase,
@@ -68,6 +72,24 @@ def test_market_models_serialize_to_json() -> None:
 
     assert stock.model_dump(mode="json")["bars"][0]["date"] == "2026-06-17"
     assert indicator.model_dump(mode="json")["points"][0]["value"] == "N/A"
+
+
+def test_market_breadth_models_serialize_to_json() -> None:
+    result = MarketBreadthResult(
+        source="eastmoney+derived",
+        retrieved_at=RETRIEVED_AT,
+        date="2026-06-17",
+        indices=[IndexSnapshot(key="sh", name="上证指数", price=4108.07, change=16.2, change_pct=0.39)],
+        limit_stats=LimitStats(limit_up_count=65, limit_down_count=2),
+        board_ladders={3: [BoardItem(code="688017", name="绿的谐波", boards=3, close=80.0, change_pct=20.0)]},
+        warnings=["derived"],
+    )
+
+    dumped = result.model_dump(mode="json")
+    assert dumped["source"] == "eastmoney+derived"
+    assert dumped["indices"][0]["key"] == "sh"
+    assert dumped["limit_stats"]["limit_down_count"] == 2
+    assert dumped["board_ladders"]["3"][0]["boards"] == 3
 
 
 def test_fundamentals_models_serialize_to_json() -> None:

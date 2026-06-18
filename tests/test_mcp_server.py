@@ -26,11 +26,12 @@ def _model(model_cls, **kwargs):
     return model_cls(**shared)
 
 
-# The 18 public functions, one per MCP tool.
+# The 19 public functions, one per MCP tool.
 EXPECTED_TOOLS = [
     "resolve_ticker",
     "get_stock_data",
     "get_indicators",
+    "get_market_breadth",
     "get_fundamentals",
     "get_balance_sheet",
     "get_cashflow",
@@ -75,9 +76,9 @@ def _server_module():
 
 
 class TestToolRegistration:
-    def test_exactly_18_tools_registered(self):
+    def test_exactly_19_tools_registered(self):
         names = _registered_tool_names()
-        assert len(names) == 18
+        assert len(names) == 19
 
     def test_expected_tool_names_match_exactly(self):
         names = _registered_tool_names()
@@ -186,7 +187,7 @@ class TestJsonSerializable:
         json.dumps(result)
         assert result["ticker"] == "688017"
 
-    def test_all_18_tools_produce_json_serializable_output(self, monkeypatch):
+    def test_all_19_tools_produce_json_serializable_output(self, monkeypatch):
         """Every tool, with its api function stubbed to a minimal model,
         must return a dict that ``json.dumps`` accepts."""
         from astock_data.models.base import ResultBase, Ticker
@@ -213,6 +214,7 @@ class TestJsonSerializable:
             "resolve_ticker": (server.resolve_ticker, ("000001",)),
             "get_stock_data": (server.get_stock_data, ("000001", "2026-01-01", "2026-01-02")),
             "get_indicators": (server.get_indicators, ("000001", "rsi", "2026-01-02", 14)),
+            "get_market_breadth": (server.get_market_breadth, ("2026-01-02",)),
             "get_fundamentals": (server.get_fundamentals, ("000001", "2026-01-02")),
             "get_balance_sheet": (server.get_balance_sheet, ("000001", "quarterly", "2026-01-02")),
             "get_cashflow": (server.get_cashflow, ("000001", "quarterly", "2026-01-02")),

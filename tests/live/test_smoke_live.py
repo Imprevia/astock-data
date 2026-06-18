@@ -175,7 +175,7 @@ def test_cli_json_live() -> None:
 
 
 def test_mcp_tools_registered_live() -> None:
-    """The MCP server registers exactly 18 tools.
+    """The MCP server registers exactly 19 tools.
 
     ``mcp.list_tools()`` is async; ``asyncio.run`` drives it synchronously
     (the project pytest config has no asyncio_mode, so async-def tests are
@@ -187,4 +187,4 @@ def test_mcp_tools_registered_live() -> None:
 
     tools = asyncio.run(mcp.list_tools())
     names = {tool.name for tool in tools}
-    assert len(names) == 18, f"expected 18 MCP tools, got {len(names)}: {sorted(names)}"
+    assert len(names) == 19, f"expected 19 MCP tools, got {len(names)}: {sorted(names)}"

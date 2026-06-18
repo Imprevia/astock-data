@@ -3,7 +3,7 @@
 
 ## 关键文件
 - `base.py`，`ResultBase`、`Ticker`、通用元数据。
-- `market.py`，行情与指标模型。
+- `market.py`，行情、指标与市场广度模型。
 - `fundamentals.py`，财务与报表模型。
 - `news.py`，新闻与全球资讯模型。
 - `signals.py`，信号类结果模型。

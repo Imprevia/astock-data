@@ -5,7 +5,16 @@ from .fundamentals import (
     FundamentalsResult,
     Quote,
 )
-from .market import IndicatorPoint, IndicatorResult, OHLCVBar, StockDataResult
+from .market import (
+    BoardItem,
+    IndexSnapshot,
+    IndicatorPoint,
+    IndicatorResult,
+    LimitStats,
+    MarketBreadthResult,
+    OHLCVBar,
+    StockDataResult,
+)
 from .news import GlobalNewsResult, NewsItem, NewsResult
 from .signals import (
     ConceptBlock,
@@ -34,6 +43,7 @@ __all__ = [
     "DragonTigerSeat",
     "FinancialRow",
     "FinancialStatementResult",
+    "BoardItem",
     "FundFlowResult",
     "FundFlowRow",
     "FundamentalsResult",
@@ -42,10 +52,13 @@ __all__ = [
     "HotStocksResult",
     "IndicatorPoint",
     "IndicatorResult",
+    "IndexSnapshot",
     "IndustryComparisonResult",
     "IndustryRow",
     "LockupExpiryResult",
     "LockupRecord",
+    "LimitStats",
+    "MarketBreadthResult",
     "NewsItem",
     "NewsResult",
     "NorthboundFlowResult",

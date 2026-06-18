@@ -97,6 +97,7 @@ def test_skill_doc_lists_real_mcp_tools():
         "resolve_ticker",
         "get_stock_data",
         "get_indicators",
+        "get_market_breadth",
         "get_fundamentals",
         "get_balance_sheet",
         "get_cashflow",

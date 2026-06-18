@@ -16,6 +16,7 @@ from astock_data.models import (
     IndicatorResult,
     IndustryComparisonResult,
     LockupExpiryResult,
+    MarketBreadthResult,
     NewsResult,
     NorthboundFlowResult,
     ProfitForecastResult,
@@ -409,6 +410,42 @@ def _industry_text(result: BaseModel) -> str:
     return _text_document(result, body)
 
 
+def _market_breadth_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for boards, items in (data.get("board_ladders") or {}).items():
+        for item in items:
+            rows.append({"boards": boards, **item})
+    return rows
+
+
+def _market_breadth_markdown(result: BaseModel) -> str:
+    data = _dump(result)
+    body = [
+        *_markdown_section("Date", _markdown_pairs(data, ("date", "description"))),
+        "",
+        *_markdown_section("Indices", _markdown_table(data.get("indices") or [], ("key", "name", "price", "change", "change_pct"))),
+        "",
+        *_markdown_section("Limit Stats", _markdown_pairs(data.get("limit_stats") or {}, ("limit_up_count", "limit_down_count"))),
+        "",
+        *_markdown_section("Board Ladders", _markdown_table(_market_breadth_rows(data), ("boards", "code", "name", "close", "change_pct"))),
+    ]
+    return _markdown_document(result, body)
+
+
+def _market_breadth_text(result: BaseModel) -> str:
+    data = _dump(result)
+    body = [
+        *_text_section("Date", _text_pairs(data, ("date", "description"))),
+        "",
+        *_text_section("Indices", _text_table(data.get("indices") or [], ("key", "name", "price", "change", "change_pct"))),
+        "",
+        *_text_section("Limit Stats", _text_pairs(data.get("limit_stats") or {}, ("limit_up_count", "limit_down_count"))),
+        "",
+        *_text_section("Board Ladders", _text_table(_market_breadth_rows(data), ("boards", "code", "name", "close", "change_pct"))),
+    ]
+    return _text_document(result, body)
+
+
 def _default_markdown(result: BaseModel) -> str:
     return _markdown_document(result, _markdown_pairs(_dump(result)))
 
@@ -420,6 +457,7 @@ def _default_text(result: BaseModel) -> str:
 MARKDOWN_RENDERERS: dict[type[BaseModel], Renderer] = {
     StockDataResult: _stock_markdown,
     IndicatorResult: _indicator_markdown,
+    MarketBreadthResult: _market_breadth_markdown,
     FundamentalsResult: _fundamentals_markdown,
     FinancialStatementResult: _financial_statement_markdown,
     NewsResult: _news_markdown,
@@ -439,6 +477,7 @@ MARKDOWN_RENDERERS: dict[type[BaseModel], Renderer] = {
 TEXT_RENDERERS: dict[type[BaseModel], Renderer] = {
     StockDataResult: _stock_text,
     IndicatorResult: _indicator_text,
+    MarketBreadthResult: _market_breadth_text,
     FundamentalsResult: _fundamentals_text,
     FinancialStatementResult: _financial_statement_text,
     NewsResult: _news_text,

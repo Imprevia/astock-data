@@ -3,12 +3,12 @@
 The individual service modules (``market_data`` / ``fundamentals`` / ``news``
 / ``signals_a`` / ``signals_b``) own the implementation; this package init is
 the single re-export surface so callers can do ``from astock_data.services
-import get_stock_data`` for any of the 17 public ``get_*`` functions.
+import get_stock_data`` for any of the 18 public ``get_*`` functions.
 
 Note: ``resolve_ticker`` is NOT re-exported here — it lives in
 ``astock_data.resolver`` (the resolver is a cross-cutting safety boundary, not
 a data service). The top-level :mod:`astock_data` package and :mod:`astock_data.api`
-expose it as the 18th public function.
+expose it alongside these data functions as the 19th public function.
 """
 
 from .fundamentals import (
@@ -21,6 +21,7 @@ from .market_data import (
     get_indicators,
     get_stock_data,
 )
+from .market_breadth import get_market_breadth
 from .news import (
     get_global_news,
     get_news,
@@ -47,6 +48,7 @@ __all__ = [
     "get_income_statement",
     # market_data
     "get_indicators",
+    "get_market_breadth",
     "get_stock_data",
     # news
     "get_global_news",

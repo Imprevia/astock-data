@@ -47,6 +47,7 @@ def test_help_exits_zero_and_lists_subcommands():
         "resolve",
         "kline",
         "indicator",
+        "market-breadth",
         "fundamentals",
         "balance-sheet",
         "cashflow",
@@ -66,11 +67,11 @@ def test_help_exits_zero_and_lists_subcommands():
         assert name in out, f"missing subcommand in --help: {name}"
 
 
-def test_eighteen_subcommands_registered():
+def test_nineteen_subcommands_registered():
     from typer.main import get_command
 
     cmds = get_command(app).commands
-    assert len(cmds) == 18
+    assert len(cmds) == 19
 
 
 def test_default_format_is_json():
@@ -254,6 +255,7 @@ def test_each_command_routes_to_facade():
         (["resolve", "688017"], "resolve_ticker", lambda m: m.return_value, ticker_result),
         (["kline", "688017", "--start", "2026-05-01", "--end", "2026-05-12"], "get_stock_data", lambda m: m.return_value, generic_result),
         (["indicator", "688017", "--indicator", "macd", "--curr-date", "2026-05-12", "--look-back-days", "30"], "get_indicators", lambda m: m.return_value, generic_result),
+        (["market-breadth", "--date", "2026-05-12"], "get_market_breadth", lambda m: m.return_value, generic_result),
         (["fundamentals", "688017"], "get_fundamentals", lambda m: m.return_value, generic_result),
         (["balance-sheet", "688017", "--freq", "annual"], "get_balance_sheet", lambda m: m.return_value, generic_result),
         (["cashflow", "688017"], "get_cashflow", lambda m: m.return_value, generic_result),

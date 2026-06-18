@@ -1,4 +1,4 @@
-"""MCP server for ``astock-data`` — exposes the 18 public API functions as tools.
+"""MCP server for ``astock-data`` — exposes the 19 public API functions as tools.
 
 Uses the official FastMCP Python SDK (`from fastmcp import FastMCP`) over the
 default stdio transport. Each tool is a thin adapter around the public facade
@@ -71,7 +71,7 @@ def _error_payload(err: AStockDataError) -> dict[str, dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Tools — 1:1 with the 18 public API functions
+# Tools — 1:1 with the 19 public API functions
 # ---------------------------------------------------------------------------
 
 
@@ -124,6 +124,15 @@ def get_indicators(
         return _serialize(
             api.get_indicators(symbol, indicator, curr_date, look_back_days)
         )
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_market_breadth(date: str = "") -> dict[str, Any]:
+    """Fetch market breadth: fixed index snapshots, limit counts, and board ladders."""
+    try:
+        return _serialize(api.get_market_breadth(date))
     except AStockDataError as exc:
         return _error_payload(exc)
 

@@ -59,6 +59,7 @@ Available MCP tools, one per public API function:
 - `resolve_ticker`
 - `get_stock_data`
 - `get_indicators`
+- `get_market_breadth`
 - `get_fundamentals`
 - `get_balance_sheet`
 - `get_cashflow`
@@ -97,7 +98,7 @@ Global options:
 
 CLI subcommands:
 
-- `resolve`, `kline`, `indicator`, `fundamentals`, `balance-sheet`, `cashflow`, `income-statement`
+- `resolve`, `kline`, `indicator`, `market-breadth`, `fundamentals`, `balance-sheet`, `cashflow`, `income-statement`
 - `news`, `global-news`, `shareholders`, `profit-forecast`, `hot-stocks`, `northbound`
 - `concepts`, `fund-flow`, `dragon-tiger`, `lockup`, `industry`
 
@@ -173,6 +174,18 @@ Expected shape:
 
 ```json
 {"source":"...","retrieved_at":"...","ticker":"688017","items":[{"title":"...","content":null,"time":"...","source":"...","url":"..."}],"warnings":[]}
+```
+
+### Get market breadth
+
+```bash
+python -m astock_data.cli market-breadth --date 2026-05-12 --format json
+```
+
+Expected shape:
+
+```json
+{"source":"eastmoney+derived","retrieved_at":"...","date":"2026-05-12","indices":[{"key":"sh","name":"上证指数","price":0,"change":0,"change_pct":0}],"limit_stats":{"limit_up_count":0,"limit_down_count":0},"board_ladders":{},"warnings":["..."]}
 ```
 
 ### Get financial statement

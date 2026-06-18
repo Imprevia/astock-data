@@ -1,6 +1,6 @@
 """Typer-based command-line interface for ``astock-data``.
 
-Exposes one subcommand per public facade function (18 in total) plus a
+Exposes one subcommand per public facade function (19 in total) plus a
 ``--format json|markdown|text`` (default ``json``) and ``--no-cache`` option.
 
 ``--format`` / ``--no-cache`` may be passed either before or after the
@@ -237,6 +237,19 @@ def indicator(
 
     _apply_global_options(format=format, no_cache=no_cache)
     _run(lambda: api.get_indicators(symbol, indicator, curr_date, look_back_days))
+
+
+@app.command("market-breadth", help="Fetch market breadth: indices, limit counts, and board ladders.")
+def market_breadth(
+    date: Optional[str] = typer.Option(None, "--date", help="Trading date YYYY-MM-DD."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_market_breadth"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_market_breadth(date or ""))
 
 
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 
 ## 关键文件
 - `conftest.py`，marker、live 跳过、fixture 约定。
-- `test_public_api.py`，18 个公开入口契约。
+- `test_public_api.py`，19 个公开入口契约。
 - `test_agents_docs.py`，`AGENTS.md` 覆盖扫描。
 - `fixtures/`，离线样例数据。
 
@@ -21,4 +21,4 @@
 - `python -m pytest tests/test_public_api.py -q`
 
 ## 与公共接口的关系
-测试目录守住 18 个公开入口、17 个服务入口、18 个 MCP 工具和所有安全边界的行为契约。
+测试目录守住 19 个公开入口、18 个服务入口、19 个 MCP 工具和所有安全边界的行为契约。

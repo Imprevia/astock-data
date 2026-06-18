@@ -220,6 +220,78 @@ class EastmoneyClient:
             )
         return dict(payload)
 
+    def index_snapshot(self, secid: str) -> dict:
+        """Return one index quote snapshot for a fixed Eastmoney ``secid``."""
+
+        params = {
+            "fltt": "2",
+            "invt": "2",
+            "secid": secid,
+            "fields": "f43,f58,f60,f169,f170",
+        }
+        payload = self.push2(PUSH2_STOCK_GET_PATH, params)
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def clist(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 100,
+        fields: str = "f12,f14,f2,f3,f6,f8",
+        fs: str = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81+s:2048",
+        sort_field: str = "f3",
+        sort_order: str = "1",
+    ) -> tuple[list[dict], int]:
+        """Return one Eastmoney ``clist`` page and the reported total count."""
+
+        params = {
+            "pn": str(page),
+            "pz": str(page_size),
+            "po": sort_order,
+            "np": "1",
+            "fltt": "2",
+            "invt": "2",
+            "fid": sort_field,
+            "fs": fs,
+            "fields": fields,
+        }
+        payload = self.push2(PUSH2_CLIST_PATH, params)
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        if not isinstance(data, Mapping):
+            return [], 0
+        diff = data.get("diff")
+        rows = [row for row in diff if isinstance(row, dict)] if isinstance(diff, list) else []
+        total = data.get("total")
+        try:
+            total_count = int(float(total))
+        except (TypeError, ValueError):
+            total_count = len(rows)
+        return rows, total_count
+
+    def clist_all(
+        self,
+        *,
+        page_size: int = 100,
+        fields: str = "f12,f14,f2,f3,f6,f8",
+    ) -> list[dict]:
+        """Return all A-share rows from Eastmoney ``clist`` using pagination."""
+
+        rows: list[dict] = []
+        page = 1
+        total = 0
+        while True:
+            page_rows, total = self.clist(page=page, page_size=page_size, fields=fields)
+            if not page_rows:
+                break
+            rows.extend(page_rows)
+            if total and len(rows) >= total:
+                break
+            if len(page_rows) < page_size:
+                break
+            page += 1
+        return rows
+
     # ------------------------------------------------------------------
     # Helper: per-stock news search (search-api)
     # ------------------------------------------------------------------

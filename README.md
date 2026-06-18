@@ -6,9 +6,9 @@
 
 ## 项目简介
 
-- 纯数据层：统一封装 A 股行情、财务、新闻、资金流、龙虎榜、解禁、行业和概念板块数据。
+- 纯数据层：统一封装 A 股行情、市场广度、财务、新闻、资金流、龙虎榜、解禁、行业和概念板块数据。
 - 无 LLM/Agent 依赖：不会导入 `langchain`、`openai`、`anthropic`、`streamlit`、`fastapi` 等应用层或智能体依赖。
-- 结构化返回：18 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
+- 结构化返回：19 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
 - 严格边界：只做数据获取、校验、缓存、格式化和协议适配，不做买卖建议、不做组合管理、不做收益承诺。
 
 ## 安装
@@ -35,10 +35,10 @@ pip install -e ".[test]"
 
 ## Python API 用法
 
-推荐从 `astock_data.api` 导入公开接口。完整公开函数共 18 个：
+推荐从 `astock_data.api` 导入公开接口。完整公开函数共 19 个：
 
 - `resolve_ticker`
-- `get_stock_data`, `get_indicators`
+- `get_stock_data`, `get_indicators`, `get_market_breadth`
 - `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement`
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
@@ -85,13 +85,14 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 - `--format json|markdown|text`，默认 `json`
 - `--no-cache`，本次调用绕过真实缓存，使用临时缓存目录
 
-18 个子命令：
+19 个子命令：
 
 | 子命令 | 对应 Python API |
 |---|---|
 | `resolve` | `resolve_ticker` |
 | `kline` | `get_stock_data` |
 | `indicator` | `get_indicators` |
+| `market-breadth` | `get_market_breadth` |
 | `fundamentals` | `get_fundamentals` |
 | `balance-sheet` | `get_balance_sheet` |
 | `cashflow` | `get_cashflow` |
@@ -132,10 +133,10 @@ opencode/Claude Code 风格 MCP 配置片段：
 
 示例文件见 `examples/mcp_config.json`。不要配置 HTTP 或 SSE，本包当前决策是 stdio only。
 
-18 个 MCP tools：
+19 个 MCP tools：
 
 - `resolve_ticker`
-- `get_stock_data`, `get_indicators`
+- `get_stock_data`, `get_indicators`, `get_market_breadth`
 - `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement`
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
@@ -147,7 +148,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 |---|---|---|
 | mootdx | TCP 7709 | OHLCV K 线、财务快照、F10 文本、股票名称映射 |
 | 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照 |
-| 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
+| 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
 | 新浪财经 | HTTP | K 线历史、财报三表、个股新闻兜底 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
@@ -186,6 +187,6 @@ python -m pytest
 
 - 本项目是 strict pure data layer，仅提供 A 股数据接口、CLI、MCP stdio 服务、缓存和格式化。
 - 不包含 LLM、Agent、Web UI、投资建议、回测、交易执行、收益预测或组合管理。
-- 所有资金流、龙虎榜、热股、解禁、行业对比字段都是事实数据或派生指标，不代表买入、卖出或持有建议。
+- 所有市场广度、资金流、龙虎榜、热股、解禁、行业对比字段都是事实数据或派生指标，不代表买入、卖出或持有建议。
 - 数据来自公开网络接口，可能延迟、缺失或因上游变更而失效。
 - 本项目仅供学习研究，不构成投资建议。使用者需自行承担投资风险。

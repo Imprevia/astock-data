@@ -236,6 +236,56 @@ def test_push2his_returns_parsed_dict(requests_mocker, client):
     assert out["data"]["klines"] == ["d1", "d2"]
 
 
+def test_index_snapshot_parses_stock_get_data(requests_mocker, client):
+    requests_mocker.get(
+        em_module.PUSH2_BASE + em_module.PUSH2_STOCK_GET_PATH,
+        json={"data": {"f58": "上证指数", "f43": 4108.07, "f169": 16.2, "f170": 0.39}},
+    )
+
+    row = client.index_snapshot("1.000001")
+
+    assert row["f58"] == "上证指数"
+    assert row["f43"] == 4108.07
+    assert requests_mocker.request_history[-1].qs["secid"] == ["1.000001"]
+
+
+def test_index_snapshot_empty_payload_returns_empty_dict(requests_mocker, client):
+    requests_mocker.get(em_module.PUSH2_BASE + em_module.PUSH2_STOCK_GET_PATH, json={"data": None})
+    assert client.index_snapshot("1.000001") == {}
+
+
+def test_clist_parses_page_rows_and_total(requests_mocker, client):
+    requests_mocker.get(
+        em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH,
+        json={"data": {"total": 2, "diff": [{"f12": "000001"}, {"f12": "688017"}]}},
+    )
+
+    rows, total = client.clist(page=2, page_size=50, fields="f12,f14")
+
+    assert total == 2
+    assert [row["f12"] for row in rows] == ["000001", "688017"]
+    last = requests_mocker.request_history[-1]
+    assert last.qs["pn"] == ["2"]
+    assert last.qs["pz"] == ["50"]
+    assert last.qs["fields"] == ["f12,f14"]
+
+
+def test_clist_all_paginates_until_total(requests_mocker, client):
+    url = em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH
+    requests_mocker.get(
+        url,
+        [
+            {"json": {"data": {"total": 3, "diff": [{"f12": "000001"}, {"f12": "000002"}]}}},
+            {"json": {"data": {"total": 3, "diff": [{"f12": "000003"}]}}},
+        ],
+    )
+
+    rows = client.clist_all(page_size=2, fields="f12")
+
+    assert [row["f12"] for row in rows] == ["000001", "000002", "000003"]
+    assert len(requests_mocker.request_history) >= 2
+
+
 # ---------------------------------------------------------------------------
 # search_news helper (JSONP-wrapped).
 # ---------------------------------------------------------------------------

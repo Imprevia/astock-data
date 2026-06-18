@@ -3,10 +3,10 @@
 
 ## 关键文件
 - `pyproject.toml`，定义依赖、pytest 配置、CLI 入口、MCP 相关安装信息。
-- `astock_data/api.py`，18 个公开函数的统一门面。
+- `astock_data/api.py`，19 个公开函数的统一门面。
 - `astock_data/__init__.py`，顶层重导出与版本号。
-- `astock_data/cli.py`，18 个 CLI 子命令入口。
-- `astock_data/mcp/server.py`，18 个 FastMCP 工具入口。
+- `astock_data/cli.py`，19 个 CLI 子命令入口。
+- `astock_data/mcp/server.py`，19 个 FastMCP 工具入口。
 - `tests/`，离线优先的回归测试与契约测试。
 
 ## 允许修改
@@ -24,4 +24,4 @@
 - `python -m pytest tests/test_agents_docs.py -q`
 
 ## 与公共接口的关系
-根目录只负责把 18 个公开入口、18 个 CLI 子命令、18 个 MCP 工具组织成同一套纯数据层门面，不在这里放业务实现。
+根目录只负责把 19 个公开入口、19 个 CLI 子命令、19 个 MCP 工具组织成同一套纯数据层门面，不在这里放业务实现。
