@@ -71,6 +71,21 @@ class FundFlowResult(ResultBase):
     signal: str | None = None
 
 
+class SectorFundFlow(BaseModel):
+    name: str
+    code: str
+    main_net_inflow: float | None = None
+    change_pct: float | None = None
+    history: list[dict]
+
+
+class SectorFundFlowResult(BaseModel):
+    date: str
+    sectors: list[SectorFundFlow]
+    signal: str
+    warnings: list[str]
+
+
 class DragonTigerEvent(BaseModel):
     date: dt.date | None = None
     reason: str | None = None

@@ -39,22 +39,23 @@ GET_FUNCS = [
     "get_news",
     "get_northbound_flow",
     "get_profit_forecast",
+    "get_sector_fund_flow",
     "get_stock_data",
 ]
 
-PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 19 total
+PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 20 total
 
 
 # --------------------------------------------------------------------------- #
 # __all__ sizing
 # --------------------------------------------------------------------------- #
-def test_api_all_has_exactly_19_names():
-    assert len(api.__all__) == 19
+def test_api_all_has_exactly_20_names():
+    assert len(api.__all__) == 20
     assert set(api.__all__) == set(PUBLIC_FUNCS)
 
 
-def test_services_all_has_exactly_18_names():
-    assert len(services.__all__) == 18
+def test_services_all_has_exactly_19_names():
+    assert len(services.__all__) == 19
     assert set(services.__all__) == set(GET_FUNCS)
 
 
@@ -134,3 +135,62 @@ def test_resolve_ticker_returns_ticker_model():
     from pydantic import BaseModel
 
     assert issubclass(Ticker, BaseModel)
+
+
+# --------------------------------------------------------------------------- #
+# get_sector_fund_flow — sector-level fund flow (TDD RED: api not implemented yet)
+# --------------------------------------------------------------------------- #
+# Field mapping (verified by Atlas via live curl 2026-06-30):
+#   rank endpoint data.diff[]:  f12=code, f14=name, f3=change_pct,
+#       f62=main_net_inflow (元, raw), f184=main_net_inflow_pct
+#   history endpoint data.klines: "date,f52_main_net_inflow,..." comma-split
+# Client funcs already implemented in eastmoney.py: fetch_sector_fund_flow_rank
+# / fetch_sector_fund_flow_history. api.get_sector_fund_flow NOT yet implemented.
+
+from astock_data.models.signals import SectorFundFlowResult  # noqa: E402
+from astock_data.clients import eastmoney as _em  # noqa: E402
+
+
+def test_sector_fund_flow_normal(monkeypatch):
+    """Happy path: rank + history return data -> SectorFundFlowResult."""
+    rank_rows = [
+        {"code": "BK0447", "name": "半导体", "change_pct": 2.5,
+         "main_net_inflow": 1e8, "main_net_inflow_pct": 1.5},
+    ]
+    hist_rows = [{"date": f"2026-06-{30 - i}", "main_net_inflow": 1e8} for i in range(5)]
+    monkeypatch.setattr(_em, "fetch_sector_fund_flow_rank", lambda **kw: rank_rows)
+    monkeypatch.setattr(_em, "fetch_sector_fund_flow_history", lambda secid, days=5, **kw: hist_rows)
+    # RED until api.get_sector_fund_flow is implemented in Task 4.
+    from astock_data.api import get_sector_fund_flow
+    result = get_sector_fund_flow(days=5)
+    assert isinstance(result, SectorFundFlowResult)
+    assert len(result.sectors) == 1
+    assert result.sectors[0].name == "半导体"
+    assert len(result.sectors[0].history) == 5
+    assert result.date
+
+
+def test_sector_fund_flow_empty(monkeypatch):
+    """Empty upstream -> empty sectors + warning."""
+    monkeypatch.setattr(_em, "fetch_sector_fund_flow_rank", lambda **kw: [])
+    from astock_data.api import get_sector_fund_flow
+    result = get_sector_fund_flow()
+    assert result.sectors == []
+    assert len(result.warnings) > 0
+
+
+def test_sector_fund_flow_api_error(monkeypatch):
+    """Upstream exception -> graceful degradation, no crash."""
+    def _boom(**kw):
+        raise RuntimeError("upstream down")
+    monkeypatch.setattr(_em, "fetch_sector_fund_flow_rank", _boom)
+    from astock_data.api import get_sector_fund_flow
+    result = get_sector_fund_flow()
+    assert result.sectors == []
+    assert len(result.warnings) > 0
+
+
+def test_sector_fund_flow_in_all():
+    """get_sector_fund_flow must be in api.__all__ (contract)."""
+    from astock_data import api as _api
+    assert "get_sector_fund_flow" in _api.__all__

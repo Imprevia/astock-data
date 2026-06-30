@@ -38,6 +38,7 @@ from .signals_b import (
     get_fund_flow,
     get_industry_comparison,
     get_lockup_expiry,
+    get_sector_fund_flow,
 )
 
 __all__ = [
@@ -64,4 +65,5 @@ __all__ = [
     "get_fund_flow",
     "get_industry_comparison",
     "get_lockup_expiry",
+    "get_sector_fund_flow",
 ]

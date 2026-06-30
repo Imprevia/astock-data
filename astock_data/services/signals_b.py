@@ -24,6 +24,7 @@ from astock_data.models import (
     LockupExpiryResult,
     LockupRecord,
 )
+from astock_data.models.signals import SectorFundFlow, SectorFundFlowResult
 from astock_data.resolver import resolve_ticker
 
 
@@ -292,6 +293,63 @@ def get_fund_flow(
         signal=_fund_signal(minute),
         raw={"curr_date": curr_date, "secid": secid},
     )
+
+
+def get_sector_fund_flow(
+    curr_date: str = "",
+    days: int = 5,
+) -> SectorFundFlowResult:
+    """行业板块主力资金流：当日排行 + 近 N 日历史。"""
+    from astock_data.clients import eastmoney as _em
+
+    warnings: list[str] = []
+    sectors: list[SectorFundFlow] = []
+
+    try:
+        rank_rows = _em.fetch_sector_fund_flow_rank()
+    except Exception as exc:  # noqa: BLE001 - upstream errors degrade to warnings
+        warnings.append(f"板块资金排行接口失败：{exc}")
+        return SectorFundFlowResult(
+            date=curr_date or dt.date.today().isoformat(),
+            sectors=[],
+            signal="",
+            warnings=warnings,
+        )
+
+    if not rank_rows:
+        warnings.append("板块资金排行数据为空（可能非交易日）。")
+        return SectorFundFlowResult(
+            date=curr_date or dt.date.today().isoformat(),
+            sectors=[],
+            signal="",
+            warnings=warnings,
+        )
+
+    for row in rank_rows:
+        code = str(row.get("code") or "")
+        secid = f"90.{code.lower()}"
+        try:
+            history = _em.fetch_sector_fund_flow_history(secid, days=days)
+        except Exception as exc:  # noqa: BLE001 - keep rank data even if history fails
+            history = []
+            warnings.append(f"{row.get('name', '?')} 历史资金拉取失败：{exc}")
+
+        sectors.append(
+            SectorFundFlow(
+                name=str(row.get("name") or ""),
+                code=code,
+                main_net_inflow=_float_or_none(row.get("main_net_inflow")),
+                change_pct=_float_or_none(row.get("change_pct")),
+                history=history,
+            )
+        )
+
+    top3 = "、".join(sector.name for sector in sectors[:3] if sector.name)
+    signal = f"主力净流入Top3：{top3}" if top3 else ""
+    date = curr_date or (
+        sectors[0].history[-1]["date"] if sectors and sectors[0].history else dt.date.today().isoformat()
+    )
+    return SectorFundFlowResult(date=date, sectors=sectors, signal=signal, warnings=warnings)
 
 
 def get_dragon_tiger_board(

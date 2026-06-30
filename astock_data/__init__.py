@@ -23,6 +23,7 @@ from .api import (
     get_news,
     get_northbound_flow,
     get_profit_forecast,
+    get_sector_fund_flow,
     get_stock_data,
     resolve_ticker,
 )
@@ -50,9 +51,10 @@ __all__ = [
     "get_profit_forecast",
     "get_hot_stocks",
     "get_northbound_flow",
-    # signals_b (5)
+    # signals_b (6)
     "get_concept_blocks",
     "get_fund_flow",
+    "get_sector_fund_flow",
     "get_dragon_tiger_board",
     "get_lockup_expiry",
     "get_industry_comparison",

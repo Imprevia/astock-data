@@ -453,4 +453,145 @@ __all__ = [
     "PUSH2_STOCK_GET_PATH",
     "SEARCH_NEWS_URL",
     "EastmoneyClient",
+    "fetch_sector_fund_flow_history",
+    "fetch_sector_fund_flow_rank",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Module-level sector fund-flow convenience functions.
+#
+# Rationale: the existing client surface is a class (``EastmoneyClient``),
+# so these thin wrappers reuse a single process-wide instance — preserving
+# the shared ``requests.Session`` (Keep-Alive) and the throttled, lock-guarded
+# ``get`` pipeline. They follow the same error/field conventions as the class
+# methods: transport/JSON failures raise ``DataSourceError`` (via ``client.get``
+# / ``_get_json``); missing fields fall back to ``None`` instead of raising
+# ``KeyError``; raw units (元) are returned untouched — unit conversion to 亿
+# is deferred to the skill/service layer.
+# ---------------------------------------------------------------------------
+
+# Process-wide shared client (thread-safe via its internal lock + throttle).
+_default_client: EastmoneyClient | None = None
+
+
+def _get_default_client() -> EastmoneyClient:
+    """Return a lazily-initialized process-wide ``EastmoneyClient``."""
+
+    global _default_client
+    if _default_client is None:
+        _default_client = EastmoneyClient()
+    return _default_client
+
+
+def fetch_sector_fund_flow_rank(
+    *,
+    client: EastmoneyClient | None = None,
+) -> list[dict]:
+    """Return today's industry-sector main fund-flow ranking.
+
+    Calls the ``push2`` ``clist`` endpoint with ``fs=m:90+t:2`` (industry
+    sectors) and sorts by main net inflow (``f62``). Each row carries raw
+    values from upstream — ``main_net_inflow`` is in 元 (NOT converted to 亿).
+
+    Each returned dict::
+
+        {
+            "code":            <f12>,   # e.g. "BK0447"
+            "name":            <f14>,   # e.g. "半导体"
+            "change_pct":      <f3>,    # 当日涨跌幅 %
+            "main_net_inflow": <f62>,   # 主力净流入 (元, 原始单位)
+            "main_net_inflow_pct": <f184>,  # 主力净流入占比 %
+        }
+
+    Rows are returned sorted by ``main_net_inflow`` descending. Missing
+    fields resolve to ``None`` (never ``KeyError``). An empty upstream
+    payload yields ``[]``.
+    """
+
+    cli = client if client is not None else _get_default_client()
+    params = {
+        "pn": "1",
+        "pz": "100",          # pull all industry sectors in one shot
+        "po": "1",            # descending (fid f62)
+        "np": "1",
+        "fltt": "2",
+        "invt": "2",
+        "fid": "f62",         # sort by main net inflow
+        "fs": "m:90+t:2",     # industry sectors
+        "fields": "f12,f14,f3,f62,f184",
+    }
+    payload = cli.push2(PUSH2_CLIST_PATH, params)
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        return []
+    diff = data.get("diff")
+    rows = [row for row in diff if isinstance(row, dict)] if isinstance(diff, list) else []
+
+    sectors: list[dict] = []
+    for row in rows:
+        inflow = row.get("f62")
+        sectors.append(
+            {
+                "code": row.get("f12"),
+                "name": row.get("f14"),
+                "change_pct": row.get("f3"),
+                "main_net_inflow": inflow,
+                "main_net_inflow_pct": row.get("f184"),
+            }
+        )
+
+    # Defensive re-sort by main_net_inflow descending (None sorts last).
+    sectors.sort(key=lambda s: (s.get("main_net_inflow") is not None, s.get("main_net_inflow")), reverse=True)
+    return sectors
+
+
+def fetch_sector_fund_flow_history(
+    secid: str,
+    days: int = 5,
+    *,
+    client: EastmoneyClient | None = None,
+) -> list[dict]:
+    """Return the recent daily main fund-flow history for one sector.
+
+    Calls the ``push2his`` ``fflow/daykline`` endpoint. Each returned item::
+
+        {"date": "2024-01-05", "main_net_inflow": <元, raw>}
+
+    ``secid`` is the full Eastmoney sector id, e.g. ``"90.bk0447"`` (caller
+    supplies the ``90.`` industry prefix). ``main_net_inflow`` is in 元.
+    Malformed kline rows are skipped; an empty/missing upstream payload
+    yields ``[]``.
+    """
+
+    cli = client if client is not None else _get_default_client()
+    params = {
+        "lmt": str(days),
+        "klt": "101",         # daily K
+        "secid": secid,
+        "fields1": "f1,f2,f3,f7",
+        "fields2": "f51,f52,f53,f54,f55",
+    }
+    url = f"{PUSH2HIS_BASE}{PUSH2HIS_FFLOW_DAYKLINE_PATH}"
+    payload = cli._get_json(url, params=params)
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        return []
+    klines = data.get("klines")
+    lines = klines if isinstance(klines, list) else []
+
+    history: list[dict] = []
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        parts = line.split(",")
+        # Format: "日期(f51),主力净流入(f52),小单,中单,大单"
+        if len(parts) < 2:
+            continue
+        date = parts[0]
+        try:
+            inflow = float(parts[1])
+        except (TypeError, ValueError):
+            inflow = None
+        history.append({"date": date, "main_net_inflow": inflow})
+    return history
