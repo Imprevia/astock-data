@@ -47,6 +47,7 @@ PUSH2_STOCK_GET_PATH = "/api/qt/stock/get"
 PUSH2_CLIST_PATH = "/api/qt/clist/get"
 PUSH2_SLIST_PATH = "/api/qt/slist/get"
 PUSH2HIS_FFLOW_DAYKLINE_PATH = "/api/qt/stock/fflow/daykline/get"
+PUSH2HIS_KLINE_PATH = "/api/qt/stock/kline/get"
 
 # Endpoints that originate from search / news surfaces keep their own Referer.
 _SEARCH_NEWS_REFERER = "https://so.eastmoney.com/"
@@ -447,6 +448,7 @@ __all__ = [
     "DATACENTER_URL",
     "FAST_NEWS_URL",
     "PUSH2HIS_FFLOW_DAYKLINE_PATH",
+    "PUSH2HIS_KLINE_PATH",
     "PUSH2_CLIST_PATH",
     "PUSH2_FFLOW_KLINE_PATH",
     "PUSH2_SLIST_PATH",
@@ -473,6 +475,15 @@ __all__ = [
 
 # Process-wide shared client (thread-safe via its internal lock + throttle).
 _default_client: EastmoneyClient | None = None
+
+
+def _float_or_none(value: Any) -> float | None:
+    """Coerce a kline CSV field to ``float``, returning ``None`` on failure."""
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _get_default_client() -> EastmoneyClient:
@@ -595,3 +606,74 @@ def fetch_sector_fund_flow_history(
             inflow = None
         history.append({"date": date, "main_net_inflow": inflow})
     return history
+
+
+def fetch_kline(
+    secid: str,
+    days: int = 10,
+    *,
+    client: "EastmoneyClient | None" = None,
+) -> list[dict]:
+    """Return daily K-lines (with amount) for a stock or index secid.
+
+    Calls the ``push2his`` ``/api/qt/stock/kline/get`` endpoint. Each
+    returned dict::
+
+        {
+            "date":   <str, e.g. "2024-01-05">,
+            "open":   <float | None>,
+            "high":   <float | None>,
+            "low":    <float | None>,
+            "close":  <float | None>,
+            "volume": <float | None>,  # 股数
+            "amount": <float | None>,  # 成交额 (元, 原始单位, 不转亿)
+        }
+
+    ``secid`` is the full Eastmoney secid. Works for both stocks
+    (e.g. ``"0.000001"``) and indices (e.g. ``"1.000001"``). Rows are
+    ordered oldest-first as returned by upstream. Malformed kline rows are
+    skipped; an empty/missing upstream payload yields ``[]``. Missing
+    numeric fields resolve to ``None`` (never ``KeyError``).
+    """
+
+    cli = client if client is not None else _get_default_client()
+    params = {
+        "secid": secid,
+        "klt": "101",          # daily K
+        "fqt": "1",            # 前复权
+        "lmt": str(days),
+        "end": "20500101",     # 远期上限，取最近 days 根
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57",
+    }
+    url = f"{PUSH2HIS_BASE}{PUSH2HIS_KLINE_PATH}"
+    payload = cli._get_json(url, params=params)
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        return []
+    klines = data.get("klines")
+    lines = klines if isinstance(klines, list) else []
+
+    rows: list[dict] = []
+    for line in lines:
+        if not isinstance(line, str):
+            continue
+        parts = line.split(",")
+        # fields2=f51,f52,f53,f54,f55,f56,f57 对应:
+        #   date(f51), open(f52), close(f53), high(f54), low(f55),
+        #   volume(f56), amount(f57)
+        # 注意: close(f53) 在 high(f54) 前面, 列序固定不可搞反.
+        if len(parts) < 7:
+            continue
+        rows.append(
+            {
+                "date": parts[0],
+                "open": _float_or_none(parts[1]),
+                "close": _float_or_none(parts[2]),
+                "high": _float_or_none(parts[3]),
+                "low": _float_or_none(parts[4]),
+                "volume": _float_or_none(parts[5]),
+                "amount": _float_or_none(parts[6]),
+            }
+        )
+    return rows

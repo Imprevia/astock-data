@@ -15,6 +15,7 @@ from .api import (
     get_global_news,
     get_hot_stocks,
     get_income_statement,
+    get_index_kline,
     get_indicators,
     get_industry_comparison,
     get_insider_transactions,
@@ -24,6 +25,7 @@ from .api import (
     get_northbound_flow,
     get_profit_forecast,
     get_sector_fund_flow,
+    get_stock_amount,
     get_stock_data,
     resolve_ticker,
 )
@@ -34,10 +36,12 @@ __all__ = [
     "__version__",
     # resolver (1)
     "resolve_ticker",
-    # market_data (2)
+    # market_data (4)
     "get_stock_data",
     "get_indicators",
     "get_market_breadth",
+    "get_index_kline",
+    "get_stock_amount",
     # fundamentals (4)
     "get_fundamentals",
     "get_balance_sheet",

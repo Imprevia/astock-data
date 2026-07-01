@@ -13,13 +13,29 @@ from astock_data.clients.tdx import TdxClient
 from astock_data.config import AStockSettings, get_settings
 from astock_data.errors import MarketValidationError
 from astock_data.market import validate_date_range
-from astock_data.models import IndicatorPoint, IndicatorResult, OHLCVBar, StockDataResult
+from astock_data.models import (
+    IndexKlineResult,
+    IndicatorPoint,
+    IndicatorResult,
+    KlineBar,
+    OHLCVBar,
+    StockAmountResult,
+    StockDataResult,
+    Ticker,
+)
 from astock_data.resolver import resolve_ticker
 
 
 _VALID_PERIODS = {"day", "week", "month", "1min", "5min", "15min", "30min", "60min"}
 _MINUTE_PERIODS = {"1min", "5min", "15min", "30min", "60min"}
 _SINA_PERIODS = {"day", "week", "month", "5min", "15min", "30min", "60min"}
+
+_INDEX_KLINE_SECIDS = {
+    "sh": "1.000001",
+    "szci": "0.399106",
+    "cyb": "0.399006",
+    "hs300": "1.000300",
+}
 
 
 _SUPPORTED_INDICATORS = {
@@ -58,6 +74,56 @@ def _to_bar(row: dict[str, Any]) -> OHLCVBar:
         low=float(row.get("low", 0.0)),
         close=float(row.get("close", 0.0)),
         volume=float(row.get("volume", 0.0)),
+    )
+
+
+def _to_kline_bar(row: dict[str, Any]) -> KlineBar:
+    return KlineBar(
+        date=str(row.get("date", "")),
+        open=row.get("open"),
+        high=row.get("high"),
+        low=row.get("low"),
+        close=row.get("close"),
+        volume=row.get("volume"),
+        amount=row.get("amount"),
+    )
+
+
+def get_index_kline(key: str, days: int = 10) -> IndexKlineResult:
+    """指数日K线（含成交额 amount）。key: sh/szci/cyb/hs300。"""
+    from astock_data.clients import eastmoney as _em
+
+    bars: list[KlineBar] = []
+    secid = _INDEX_KLINE_SECIDS.get(key)
+    if secid:
+        try:
+            rows = _em.fetch_kline(secid, days=days)
+            bars = [_to_kline_bar(row) for row in rows]
+        except Exception:  # noqa: BLE001 - upstream errors degrade to empty result
+            bars = []
+    return IndexKlineResult(source="eastmoney", retrieved_at=_now_utc(), key=key, bars=bars)
+
+
+def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
+    """个股近 days 日 K 线（含成交额）。"""
+    from astock_data.clients import eastmoney as _em
+
+    market = "sh" if str(ticker).startswith("6") else "sz"
+    resolved = Ticker(code=ticker, market=market, name=None)
+    bars: list[KlineBar] = []
+    try:
+        resolved = resolve_ticker(ticker)
+        secid = f"1.{resolved.code}" if str(resolved.code).startswith("6") else f"0.{resolved.code}"
+        rows = _em.fetch_kline(secid, days=days)
+        bars = [_to_kline_bar(row) for row in rows]
+    except Exception:  # noqa: BLE001 - upstream errors degrade to empty result
+        bars = []
+    return StockAmountResult(
+        source="eastmoney",
+        retrieved_at=_now_utc(),
+        ticker=resolved,
+        name=resolved.name,
+        bars=bars,
     )
 
 

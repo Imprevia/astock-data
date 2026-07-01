@@ -25,10 +25,39 @@ class OHLCVBar(BaseModel):
         return str(value)
 
 
+class KlineBar(BaseModel):
+    date: str
+    open: float | None = None
+    high: float | None = None
+    low: float | None = None
+    close: float | None = None
+    volume: float | None = None
+    amount: float | None = None
+
+    @field_validator("date", mode="before")
+    @classmethod
+    def _coerce_date(cls, value: object) -> str:
+        if isinstance(value, dt.datetime):
+            return value.isoformat(timespec="minutes")
+        if isinstance(value, dt.date):
+            return value.isoformat()
+        return str(value)
+
+
 class StockDataResult(ResultBase):
     ticker: Ticker
     bars: list[OHLCVBar]
     period: str = "day"
+
+
+class IndexKlineResult(ResultBase):
+    key: str
+    bars: list[KlineBar]
+
+
+class StockAmountResult(ResultBase):
+    ticker: Ticker
+    bars: list[KlineBar]
 
 
 class IndicatorPoint(BaseModel):

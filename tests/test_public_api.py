@@ -20,7 +20,7 @@ from astock_data.models.base import Ticker
 
 pytestmark = pytest.mark.unit
 
-# The 18 public get_* entrypoints (sorted for stable diffs).
+# The 20 public get_* entrypoints (sorted for stable diffs).
 GET_FUNCS = [
     "get_balance_sheet",
     "get_cashflow",
@@ -31,8 +31,9 @@ GET_FUNCS = [
     "get_global_news",
     "get_hot_stocks",
     "get_income_statement",
-    "get_indicators",
     "get_industry_comparison",
+    "get_index_kline",
+    "get_indicators",
     "get_insider_transactions",
     "get_lockup_expiry",
     "get_market_breadth",
@@ -40,22 +41,23 @@ GET_FUNCS = [
     "get_northbound_flow",
     "get_profit_forecast",
     "get_sector_fund_flow",
+    "get_stock_amount",
     "get_stock_data",
 ]
 
-PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 20 total
+PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 22 total
 
 
 # --------------------------------------------------------------------------- #
 # __all__ sizing
 # --------------------------------------------------------------------------- #
-def test_api_all_has_exactly_20_names():
-    assert len(api.__all__) == 20
+def test_api_all_has_exactly_22_names():
+    assert len(api.__all__) == 22
     assert set(api.__all__) == set(PUBLIC_FUNCS)
 
 
-def test_services_all_has_exactly_19_names():
-    assert len(services.__all__) == 19
+def test_services_all_has_exactly_21_names():
+    assert len(services.__all__) == 21
     assert set(services.__all__) == set(GET_FUNCS)
 
 
@@ -194,3 +196,51 @@ def test_sector_fund_flow_in_all():
     """get_sector_fund_flow must be in api.__all__ (contract)."""
     from astock_data import api as _api
     assert "get_sector_fund_flow" in _api.__all__
+
+
+# --------------------------------------------------------------------------- #
+# get_index_kline / get_stock_amount — K-line with amount (TDD RED: api not impl)
+# --------------------------------------------------------------------------- #
+from astock_data.models.market import IndexKlineResult, StockAmountResult  # noqa: E402
+from astock_data.clients import eastmoney as _em  # noqa: E402
+
+
+def test_index_kline_normal(monkeypatch):
+    klines = [{"date": "2026-06-30", "open": 4058.0, "high": 4097.0, "low": 4052.0, "close": 4094.0, "volume": 5.98e8, "amount": 1.53e12}]
+    monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
+    from astock_data.api import get_index_kline
+    result = get_index_kline("sh", 5)
+    assert isinstance(result, IndexKlineResult)
+    assert len(result.bars) == 1
+    assert result.bars[0].amount == 1.53e12
+
+
+def test_index_kline_empty(monkeypatch):
+    monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: [])
+    from astock_data.api import get_index_kline
+    result = get_index_kline("sh", 5)
+    assert result.bars == []
+
+
+def test_index_kline_api_error(monkeypatch):
+    def _boom(secid, days=10, **kw):
+        raise RuntimeError("upstream down")
+    monkeypatch.setattr(_em, "fetch_kline", _boom)
+    from astock_data.api import get_index_kline
+    result = get_index_kline("sh", 5)
+    assert result.bars == []
+
+
+def test_stock_amount_normal(monkeypatch):
+    klines = [{"date": f"2026-06-{30 - i}", "amount": 1.1e9} for i in range(5)]
+    monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
+    from astock_data.api import get_stock_amount
+    result = get_stock_amount("000001", 5)
+    assert isinstance(result, StockAmountResult)
+    assert len(result.bars) == 5
+
+
+def test_kline_funcs_in_all():
+    from astock_data import api as _api
+    assert "get_index_kline" in _api.__all__
+    assert "get_stock_amount" in _api.__all__

@@ -18,7 +18,9 @@ from .fundamentals import (
     get_income_statement,
 )
 from .market_data import (
+    get_index_kline,
     get_indicators,
+    get_stock_amount,
     get_stock_data,
 )
 from .market_breadth import get_market_breadth
@@ -48,8 +50,10 @@ __all__ = [
     "get_fundamentals",
     "get_income_statement",
     # market_data
+    "get_index_kline",
     "get_indicators",
     "get_market_breadth",
+    "get_stock_amount",
     "get_stock_data",
     # news
     "get_global_news",

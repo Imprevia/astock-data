@@ -7,12 +7,15 @@ from .fundamentals import (
 )
 from .market import (
     BoardItem,
+    IndexKlineResult,
     IndexSnapshot,
     IndicatorPoint,
     IndicatorResult,
     LimitStats,
+    KlineBar,
     MarketBreadthResult,
     OHLCVBar,
+    StockAmountResult,
     StockDataResult,
 )
 from .news import GlobalNewsResult, NewsItem, NewsResult
@@ -52,9 +55,11 @@ __all__ = [
     "HotStocksResult",
     "IndicatorPoint",
     "IndicatorResult",
+    "IndexKlineResult",
     "IndexSnapshot",
     "IndustryComparisonResult",
     "IndustryRow",
+    "KlineBar",
     "LockupExpiryResult",
     "LockupRecord",
     "LimitStats",
@@ -68,6 +73,7 @@ __all__ = [
     "ResultBase",
     "ResultMeta",
     "ShareholderResult",
+    "StockAmountResult",
     "StockDataResult",
     "Ticker",
 ]
