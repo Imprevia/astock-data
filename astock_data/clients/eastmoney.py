@@ -52,6 +52,29 @@ PUSH2HIS_KLINE_PATH = "/api/qt/stock/kline/get"
 # Endpoints that originate from search / news surfaces keep their own Referer.
 _SEARCH_NEWS_REFERER = "https://so.eastmoney.com/"
 _FAST_NEWS_REFERER = "https://kuaixun.eastmoney.com/"
+_PUSH2_DEFAULT_HEADERS: dict[str, str] = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Referer": "https://quote.eastmoney.com/",
+    "Connection": "keep-alive",
+}
+_MAX_RETRIES = 2
+_RETRY_DELAYS = [1.0, 2.0]
+
+
+def _is_retryable_transport_error(exc: requests.RequestException) -> bool:
+    if isinstance(
+        exc,
+        (
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ),
+    ):
+        return True
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "unexpected eof" in str(exc).lower()
+    return False
 
 
 class EastmoneyClient:
@@ -103,24 +126,40 @@ class EastmoneyClient:
         # back-to-back requests before either updates the timestamp — that
         # race is exactly the flaw being fixed from the source ``_em_get``.
         with self._lock:
-            wait = self.min_interval - (time.time() - self._last_call)
-            if wait > 0:
-                time.sleep(wait + random.uniform(0.1, 0.5))
-            try:
-                response = self._session.get(
-                    url,
-                    params=params,
-                    headers=headers,
-                    timeout=self.timeout,
-                    **kwargs,
-                )
-            except requests.RequestException as exc:
-                # Transport-level failure (DNS, connection, timeout).
-                raise DataSourceError(
-                    f"Eastmoney request failed: {url!r}: {exc}"
-                ) from exc
-            finally:
-                self._last_call = time.time()
+            last_exc: requests.RequestException | None = None
+            for attempt in range(1 + _MAX_RETRIES):
+                if attempt == 0:
+                    wait = self.min_interval - (time.time() - self._last_call)
+                    if wait > 0:
+                        time.sleep(wait + random.uniform(0.1, 0.5))
+                else:
+                    delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
+                    time.sleep(delay)
+
+                try:
+                    response = self._session.get(
+                        url,
+                        params=params,
+                        headers=headers,
+                        timeout=self.timeout,
+                        **kwargs,
+                    )
+                    self._last_call = time.time()
+                    break
+                except requests.RequestException as exc:
+                    self._last_call = time.time()
+                    last_exc = exc
+                    if not _is_retryable_transport_error(exc) or attempt >= _MAX_RETRIES:
+                        attempts = attempt + 1
+                        raise DataSourceError(
+                            f"Eastmoney request failed after {attempts} attempts: {url!r}: "
+                            f"last error: {type(exc).__name__}: {exc}"
+                        ) from exc
+            else:
+                if last_exc is not None:
+                    raise DataSourceError(
+                        f"Eastmoney request failed: {url!r}: {last_exc}"
+                    ) from last_exc
 
         self._raise_for_status(response, url)
         return response
@@ -203,7 +242,7 @@ class EastmoneyClient:
         """Call a ``push2.eastmoney.com`` path and return its parsed JSON."""
 
         url = f"{PUSH2_BASE}{path}"
-        payload = self._get_json(url, params=params)
+        payload = self._get_json(url, params=params, headers=_PUSH2_DEFAULT_HEADERS)
         if not isinstance(payload, Mapping):
             raise DataSourceError(
                 f"push2 endpoint returned non-object JSON at {url!r}"
@@ -214,7 +253,7 @@ class EastmoneyClient:
         """Call a ``push2his.eastmoney.com`` path and return parsed JSON."""
 
         url = f"{PUSH2HIS_BASE}{path}"
-        payload = self._get_json(url, params=params)
+        payload = self._get_json(url, params=params, headers=_PUSH2_DEFAULT_HEADERS)
         if not isinstance(payload, Mapping):
             raise DataSourceError(
                 f"push2his endpoint returned non-object JSON at {url!r}"
@@ -423,7 +462,7 @@ class EastmoneyClient:
             # slist returns the block membership list for the given secid.
         }
         url = f"{PUSH2_BASE}{PUSH2_SLIST_PATH}"
-        payload = self._get_json(url, params=params)
+        payload = self._get_json(url, params=params, headers=_PUSH2_DEFAULT_HEADERS)
         data = payload.get("data") if isinstance(payload, Mapping) else None
         diff = data.get("diff") if isinstance(data, Mapping) else None
         if not isinstance(diff, list):
@@ -501,7 +540,7 @@ def fetch_sector_fund_flow_rank(
 ) -> list[dict]:
     """Return today's industry-sector main fund-flow ranking.
 
-    Calls the ``push2`` ``clist`` endpoint with ``fs=m:90+t:2`` (industry
+    Calls the ``push2`` ``clist`` endpoint with ``fs=m:90+s:4`` (industry
     sectors) and sorts by main net inflow (``f62``). Each row carries raw
     values from upstream — ``main_net_inflow`` is in 元 (NOT converted to 亿).
 
@@ -529,7 +568,7 @@ def fetch_sector_fund_flow_rank(
         "fltt": "2",
         "invt": "2",
         "fid": "f62",         # sort by main net inflow
-        "fs": "m:90+t:2",     # industry sectors
+        "fs": "m:90+s:4",     # industry sectors
         "fields": "f12,f14,f3,f62,f184",
     }
     payload = cli.push2(PUSH2_CLIST_PATH, params)

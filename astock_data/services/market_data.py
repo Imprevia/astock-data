@@ -94,14 +94,26 @@ def get_index_kline(key: str, days: int = 10) -> IndexKlineResult:
     from astock_data.clients import eastmoney as _em
 
     bars: list[KlineBar] = []
+    warnings: list[str] = []
     secid = _INDEX_KLINE_SECIDS.get(key)
-    if secid:
+    if not secid:
+        warnings.append(f"未知的指数key: {key!r}，支持: {', '.join(sorted(_INDEX_KLINE_SECIDS))}")
+    else:
         try:
             rows = _em.fetch_kline(secid, days=days)
             bars = [_to_kline_bar(row) for row in rows]
-        except Exception:  # noqa: BLE001 - upstream errors degrade to empty result
+        except Exception as exc:  # noqa: BLE001 - upstream errors degrade to empty result
             bars = []
-    return IndexKlineResult(source="eastmoney", retrieved_at=_now_utc(), key=key, bars=bars)
+            warnings.append(f"获取指数K线失败(key={key}): {type(exc).__name__}: {exc}")
+        if not bars:
+            try:
+                tdx_rows = TdxClient().index_bars(key, days=days)
+                if tdx_rows:
+                    bars = [_to_kline_bar(row) for row in tdx_rows]
+                    warnings.append(f"东财 push2his 不可用，已降级到 mootdx 获取指数K线（有效行数 {len(bars)}/{days}）")
+            except Exception as tdx_exc:  # noqa: BLE001 - fallback errors are reported as warnings
+                warnings.append(f"mootdx fallback 也失败: {type(tdx_exc).__name__}: {tdx_exc}")
+    return IndexKlineResult(source="eastmoney", retrieved_at=_now_utc(), key=key, bars=bars, warnings=warnings)
 
 
 def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
@@ -111,19 +123,22 @@ def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
     market = "sh" if str(ticker).startswith("6") else "sz"
     resolved = Ticker(code=ticker, market=market, name=None)
     bars: list[KlineBar] = []
+    warnings: list[str] = []
     try:
         resolved = resolve_ticker(ticker)
         secid = f"1.{resolved.code}" if str(resolved.code).startswith("6") else f"0.{resolved.code}"
         rows = _em.fetch_kline(secid, days=days)
         bars = [_to_kline_bar(row) for row in rows]
-    except Exception:  # noqa: BLE001 - upstream errors degrade to empty result
+    except Exception as exc:  # noqa: BLE001 - upstream errors degrade to empty result
         bars = []
+        warnings.append(f"获取个股成交额失败(ticker={ticker}): {type(exc).__name__}: {exc}")
     return StockAmountResult(
         source="eastmoney",
         retrieved_at=_now_utc(),
         ticker=resolved,
         name=resolved.name,
         bars=bars,
+        warnings=warnings,
     )
 
 

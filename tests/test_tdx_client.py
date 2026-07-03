@@ -86,6 +86,39 @@ class FakeMootdx:
             ]
         )
 
+    def get_security_bars(self, frequency, market, symbol, start, offset):
+        self.calls.append(
+            (
+                "get_security_bars",
+                (frequency, market, symbol, start, offset),
+                {},
+            )
+        )
+        return [
+            {
+                "year": 6848,
+                "month": 63,
+                "day": 61,
+                "open": 0,
+                "high": 0,
+                "low": 0,
+                "close": 0,
+                "volume": 0,
+                "amount": 0,
+            },
+            {
+                "year": 2026,
+                "month": 7,
+                "day": 1,
+                "open": 3000.0,
+                "high": 3010.0,
+                "low": 2990.0,
+                "close": 3005.0,
+                "volume": 123456.0,
+                "amount": 1666220425216.0,
+            },
+        ]
+
     def F10(self, symbol="", name=""):
         self.calls.append(("F10", (symbol,), {"name": name}))
         return (
@@ -216,6 +249,32 @@ def test_bars_period_maps_to_mootdx_category(period, category):
 def test_bars_invalid_period_raises_value_error():
     with pytest.raises(ValueError, match="Unsupported K-line period"):
         TdxClient(client=FakeMootdx()).bars("000001", period="2min")
+
+
+def test_index_bars_uses_explicit_market_and_keeps_amount():
+    fake = FakeMootdx()
+    client = TdxClient(client=fake)
+
+    rows = client.index_bars("sh", days=10)
+
+    assert rows == [
+        {
+            "date": "2026-07-01",
+            "open": 3000.0,
+            "high": 3010.0,
+            "low": 2990.0,
+            "close": 3005.0,
+            "volume": 123456.0,
+            "amount": 1666220425216.0,
+        }
+    ]
+    security_calls = [c for c in fake.calls if c[0] == "get_security_bars"]
+    assert security_calls[0][1] == (4, 1, "000001", 0, 30)
+
+
+def test_index_bars_rejects_unknown_key():
+    with pytest.raises(ValueError, match="Unsupported index key"):
+        TdxClient(client=FakeMootdx()).index_bars("unknown")
 
 
 # ---------------------------------------------------------------------------

@@ -213,22 +213,69 @@ def test_index_kline_normal(monkeypatch):
     assert isinstance(result, IndexKlineResult)
     assert len(result.bars) == 1
     assert result.bars[0].amount == 1.53e12
+    assert result.warnings == []
 
 
 def test_index_kline_empty(monkeypatch):
     monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: [])
+    from astock_data.services import market_data as _md
+
+    class _EmptyTdx:
+        def index_bars(self, key, days=10):
+            return []
+
+    monkeypatch.setattr(_md, "TdxClient", lambda: _EmptyTdx())
     from astock_data.api import get_index_kline
     result = get_index_kline("sh", 5)
     assert result.bars == []
+    assert result.warnings == []
+
+
+def test_index_kline_falls_back_to_tdx(monkeypatch):
+    monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: [])
+    from astock_data.services import market_data as _md
+
+    class _FallbackTdx:
+        def index_bars(self, key, days=10):
+            return [
+                {
+                    "date": "2026-07-01",
+                    "open": 3000.0,
+                    "high": 3010.0,
+                    "low": 2990.0,
+                    "close": 3005.0,
+                    "volume": 123456.0,
+                    "amount": 1666220425216.0,
+                }
+            ]
+
+    monkeypatch.setattr(_md, "TdxClient", lambda: _FallbackTdx())
+    from astock_data.api import get_index_kline
+
+    result = get_index_kline("sh", 5)
+
+    assert len(result.bars) == 1
+    assert result.bars[0].amount == 1666220425216.0
+    assert "已降级到 mootdx" in result.warnings[0]
 
 
 def test_index_kline_api_error(monkeypatch):
     def _boom(secid, days=10, **kw):
         raise RuntimeError("upstream down")
     monkeypatch.setattr(_em, "fetch_kline", _boom)
+    from astock_data.services import market_data as _md
+
+    class _FailingTdx:
+        def index_bars(self, key, days=10):
+            raise RuntimeError("tdx down")
+
+    monkeypatch.setattr(_md, "TdxClient", lambda: _FailingTdx())
     from astock_data.api import get_index_kline
     result = get_index_kline("sh", 5)
     assert result.bars == []
+    assert len(result.warnings) > 0
+    assert "upstream down" in result.warnings[0]
+    assert "tdx down" in result.warnings[1]
 
 
 def test_stock_amount_normal(monkeypatch):

@@ -217,6 +217,21 @@ def test_datacenter_missing_result_returns_empty_list(requests_mocker, client):
     assert client.datacenter("rpt_x") == []
 
 
+def test_fetch_sector_fund_flow_rank_uses_industry_fs():
+    class _FakeClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict]] = []
+
+        def push2(self, path: str, params: dict) -> dict:
+            self.calls.append((path, params))
+            return {"data": {"diff": []}}
+
+    fake = _FakeClient()
+
+    assert em_module.fetch_sector_fund_flow_rank(client=fake) == []
+    assert fake.calls[0][1]["fs"] == "m:90+s:4"
+
+
 # ---------------------------------------------------------------------------
 # push2 / push2his helpers.
 # ---------------------------------------------------------------------------
@@ -234,6 +249,36 @@ def test_push2his_returns_parsed_dict(requests_mocker, client):
     requests_mocker.get(url, json={"data": {"klines": ["d1", "d2"]}})
     out = client.push2his(em_module.PUSH2HIS_FFLOW_DAYKLINE_PATH, {"secid": "0.000001"})
     assert out["data"]["klines"] == ["d1", "d2"]
+
+
+def test_push2_sends_browser_headers(requests_mocker, client):
+    """push2() requests include browser headers."""
+
+    requests_mocker.get(
+        em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH,
+        json={"data": {"diff": []}},
+    )
+
+    client.push2(em_module.PUSH2_CLIST_PATH, {"secid": "1.000001"})
+
+    last = requests_mocker.request_history[-1]
+    assert last.headers["Accept"] == "application/json, text/plain, */*"
+    assert last.headers["Referer"] == "https://quote.eastmoney.com/"
+    assert "zh-CN" in last.headers["Accept-Language"]
+    assert last.headers["Connection"] == "keep-alive"
+
+
+def test_push2his_sends_browser_headers(requests_mocker, client):
+    """push2his() requests include browser headers."""
+
+    url = em_module.PUSH2HIS_BASE + em_module.PUSH2HIS_KLINE_PATH
+    requests_mocker.get(url, json={"data": {"klines": []}})
+
+    client.push2his(em_module.PUSH2HIS_KLINE_PATH, {"secid": "1.000001"})
+
+    last = requests_mocker.request_history[-1]
+    assert last.headers["Referer"] == "https://quote.eastmoney.com/"
+    assert "zh-CN" in last.headers["Accept-Language"]
 
 
 def test_index_snapshot_parses_stock_get_data(requests_mocker, client):
@@ -409,6 +454,75 @@ def test_transport_error_raises_data_source_error(client, monkeypatch):
     monkeypatch.setattr(client._session, "get", _boom)
     with pytest.raises(DataSourceError):
         client.get(em_module.DATACENTER_URL)
+
+
+def test_get_retries_on_connection_error(monkeypatch):
+    """ConnectionError is retried up to _MAX_RETRIES times before giving up."""
+
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0)
+
+    call_count = 0
+
+    def _flaky_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise requests.ConnectionError("Remote end closed connection")
+
+    monkeypatch.setattr(client._session, "get", _flaky_get)
+    sleep_calls = []
+    monkeypatch.setattr(em_module.time, "sleep", lambda s: sleep_calls.append(s))
+
+    with pytest.raises(DataSourceError) as exc_info:
+        client.get(em_module.DATACENTER_URL)
+
+    assert call_count == 1 + em_module._MAX_RETRIES
+    assert "attempts" in str(exc_info.value)
+    assert em_module.DATACENTER_URL in str(exc_info.value)
+    retry_delays = [s for s in sleep_calls if s in em_module._RETRY_DELAYS]
+    assert len(retry_delays) == em_module._MAX_RETRIES
+
+
+def test_get_does_not_retry_on_non_retryable_error(monkeypatch):
+    """Non-retryable errors fail immediately."""
+
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0)
+
+    call_count = 0
+
+    def _fail(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise requests.HTTPError("400 Bad Request")
+
+    monkeypatch.setattr(client._session, "get", _fail)
+
+    with pytest.raises(DataSourceError):
+        client.get(em_module.DATACENTER_URL)
+
+    assert call_count == 1
+
+
+def test_get_succeeds_on_retry(monkeypatch):
+    """ConnectionError on first attempt, success on retry."""
+
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0)
+
+    call_count = 0
+
+    def _recovering_get(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise requests.ConnectionError("connection reset")
+        return _FakeResponse(json_data={"ok": True})
+
+    monkeypatch.setattr(client._session, "get", _recovering_get)
+    monkeypatch.setattr(em_module.time, "sleep", lambda s: None)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert call_count == 2
+    assert response.json() == {"ok": True}
 
 
 def test_non_json_body_raises_data_source_error(requests_mocker, client):

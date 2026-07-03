@@ -41,6 +41,12 @@ _PERIOD_CATEGORY = {
     "30min": 2,
     "60min": 3,
 }
+_INDEX_MARKET_MAP: dict[str, tuple[int, str]] = {
+    "sh": (1, "000001"),
+    "szci": (0, "399106"),
+    "cyb": (0, "399006"),
+    "hs300": (1, "000300"),
+}
 
 
 def _import_mootdx_quotes() -> Any:
@@ -206,6 +212,101 @@ class TdxClient:
     def daily_bars(self, code: str, offset: int = 800) -> list[dict]:
         """Backward-compatible alias for daily K-line bars."""
         return self.bars(code, period="day", offset=offset)
+
+    def index_bars(self, key: str, days: int = 10) -> list[dict]:
+        """获取指数日 K 线（含 amount）。
+
+        通过 mootdx TCP 行情服务器获取指数 K 线。由于 mootdx 对指数
+        返回的数据可能包含垃圾行（无效日期和异常数值），此方法会
+        过滤掉 year 不在 [2000, 2100]、month 不在 [1, 12]、day 不在
+        [1, 31] 范围内的行。
+
+        注意：mootdx 对指数的历史数据覆盖有限，通常只能返回少量
+        有效行（可能少于 days）。调用方应据此判断数据是否充足。
+
+        :param key: 指数 key，支持 sh/szci/cyb/hs300
+        :param days: 请求的日 K 线数量
+        :return: list[dict]，每项包含 date/open/high/low/close/volume/amount
+        """
+        mapping = _INDEX_MARKET_MAP.get(key)
+        if mapping is None:
+            supported = ", ".join(sorted(_INDEX_MARKET_MAP))
+            raise ValueError(f"Unsupported index key: {key!r}. Supported: {supported}")
+
+        market, code = mapping
+        mootdx_client = self._get_client()
+        # mootdx 的 StdQuotes 对象通过 .client 属性暴露底层 TdxHq_API，
+        # 后者才有 get_security_bars 方法。
+        if hasattr(mootdx_client, "client") and hasattr(mootdx_client.client, "get_security_bars"):
+            raw_api = mootdx_client.client
+        elif hasattr(mootdx_client, "get_security_bars"):
+            # 注入的 mock 或其他兼容客户端直接暴露该方法
+            raw_api = mootdx_client
+        else:
+            raise DataSourceError(
+                "mootdx client does not expose get_security_bars; "
+                "cannot fetch index K-line data"
+            )
+        raw_result = raw_api.get_security_bars(
+            4,
+            market,
+            code,
+            0,
+            max(days * 3, 30),
+        )
+        if not raw_result:
+            return []
+
+        rows: list[dict] = []
+        for rec in raw_result:
+            if hasattr(rec, "items"):
+                d = dict(rec)
+            elif isinstance(rec, dict):
+                d = rec
+            else:
+                continue
+
+            try:
+                year = int(d.get("year", 0))
+                month = int(d.get("month", 0))
+                day = int(d.get("day", 0))
+            except (TypeError, ValueError):
+                continue
+            if not (2000 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31):
+                continue
+
+            amount = d.get("amount")
+            volume = d.get("volume", d.get("vol"))
+            try:
+                amount_f = float(amount) if amount is not None else None
+            except (TypeError, ValueError):
+                amount_f = None
+            try:
+                volume_f = float(volume) if volume is not None else None
+            except (TypeError, ValueError):
+                volume_f = None
+
+            try:
+                open_f = float(d.get("open", 0))
+                high_f = float(d.get("high", 0))
+                low_f = float(d.get("low", 0))
+                close_f = float(d.get("close", 0))
+            except (TypeError, ValueError):
+                continue
+
+            rows.append(
+                {
+                    "date": f"{year:04d}-{month:02d}-{day:02d}",
+                    "open": open_f,
+                    "high": high_f,
+                    "low": low_f,
+                    "close": close_f,
+                    "volume": volume_f if volume_f is not None else 0.0,
+                    "amount": amount_f,
+                }
+            )
+
+        return rows
 
     # ------------------------------------------------------------------
     # financial snapshot
