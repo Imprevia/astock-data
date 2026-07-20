@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
+from astock_data.cache import SQLiteStructuredCache
 from astock_data.clients.eastmoney import (
     EastmoneyClient,
     PUSH2HIS_FFLOW_DAYKLINE_PATH,
@@ -24,7 +29,13 @@ from astock_data.models import (
     LockupExpiryResult,
     LockupRecord,
 )
-from astock_data.models.signals import SectorFundFlow, SectorFundFlowResult
+from astock_data.models.signals import (
+    SectorFundFlow,
+    SectorFundFlowHistoryResult,
+    SectorFundFlowResult,
+    SectorStrengthResult,
+    SectorStrengthRow,
+)
 from astock_data.resolver import resolve_ticker
 
 
@@ -485,10 +496,264 @@ def get_industry_comparison(
     )
 
 
+# ---------------------------------------------------------------------------
+# Sector strength + history (daily-review step-2 「定方向」data sources)
+# ---------------------------------------------------------------------------
+
+
+def _structured_cache(settings: AStockSettings | None) -> SQLiteStructuredCache:
+    cfg = settings or get_settings()
+    return SQLiteStructuredCache(
+        base_dir=Path(cfg.cache_dir),
+        ttl=dt.timedelta(hours=cfg.structured_cache_ttl_hours),
+    )
+
+
+def _target_trade_date(curr_date: str) -> str:
+    """Normalize a user-supplied date to ``YYYY-MM-DD`` (default: today)."""
+    text = (curr_date or "").strip()
+    if text:
+        return dt.date.fromisoformat(text[:10]).isoformat()
+    return dt.date.today().isoformat()
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    text = str(exc).lower()
+    return (
+        "Connection" in name
+        or "Timeout" in name
+        or "connection" in text
+        or "timeout" in text
+    )
+
+
+def _sector_strength_row(row: Mapping[str, Any]) -> SectorStrengthRow | None:
+    code = str(row.get("f12") or "").strip()
+    name = str(row.get("f14") or "").strip()
+    if not code or not name:
+        return None
+    return SectorStrengthRow(
+        code=code,
+        name=name,
+        change_pct=_float_or_none(row.get("f3")),
+        amount=_float_or_none(row.get("f6")),
+        main_net_inflow=_float_or_none(row.get("f62")),
+        main_inflow_pct=_float_or_none(row.get("f184")),
+        up_count=_int_or_none(row.get("f104")),
+        down_count=_int_or_none(row.get("f105")),
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value in (None, "", "-"):
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def get_sector_strength(
+    curr_date: str = "",
+    *,
+    eastmoney: EastmoneyClient | None = None,
+    settings: AStockSettings | None = None,
+) -> SectorStrengthResult:
+    """行业板块当日 6 维强度数据（成交额/主力净额/净占比/涨跌幅/上涨·下跌数）。
+
+    一次调用东方财富 clist ``m:90+t:2``（与 daily-review 第二步原口径一致），
+    取齐 ``f3/f6/f62/f184/f104/f105`` 全字段。封 IP / 断连时自动回退到本地
+    ``SQLiteStructuredCache`` 最近一次成功快照（最多回退 3 天），并以
+    ``cache_source`` 字段标注。
+
+    板块代码（如 ``BK0447``）非 A 股 ticker，因此不经 ``resolve_ticker``；
+    数据层只对板块码做格式校验。
+    """
+    from astock_data.clients import eastmoney as _em
+
+    client = _eastmoney_client(eastmoney, settings)
+    target_date = _target_trade_date(curr_date)
+    warnings: list[str] = []
+    cache_source: str | None = None
+    cache = _structured_cache(settings)
+    hour_key = f"{target_date}-{dt.datetime.now().hour:02d}"
+
+    raw_rows: list[dict[str, Any]] | None = None
+    try:
+        payload = client.push2(
+            PUSH2_CLIST_PATH,
+            {
+                "pn": "1",
+                "pz": "100",
+                "po": "1",
+                "np": "1",
+                "fltt": "2",
+                "invt": "2",
+                "fid": "f3",
+                "fs": "m:90+t:2",
+                "fields": "f12,f14,f3,f6,f62,f184,f104,f105",
+            },
+        )
+        raw_rows = _diff_rows(payload)
+        try:
+            cache.write_general(
+                "sector_strength",
+                hour_key,
+                target_date,
+                {"rows": raw_rows},
+            )
+        except Exception:  # noqa: BLE001 - cache write failure must not break the call
+            pass
+    except Exception as exc:  # noqa: BLE001 - upstream errors trigger cache fallback
+        reason = "断连/超时" if _is_connection_error(exc) else type(exc).__name__
+        warnings.append(f"⚠️ 行业数据接口失败({reason})，尝试缓存回退：{exc}")
+        cached = None
+        try:
+            cached = cache.read_latest("sector_strength", hour_key, target_date, max_fallback_days=3)
+        except Exception:  # noqa: BLE001 - cache read failure degrades to empty
+            cached = None
+        if cached is None:
+            warnings.append("❌ 无可用缓存，行业强度维度降级为空。请联网后重试以生成缓存。")
+            return SectorStrengthResult(date=target_date, rows=[], cache_source=None, warnings=warnings)
+        payload_cache, actual_date = cached
+        raw_rows = payload_cache.get("rows") if isinstance(payload_cache, dict) else []
+        cache_source = actual_date
+        if actual_date != target_date:
+            warnings.append(f"⚠️ 使用 {actual_date} 的缓存数据，非当日")
+
+    rows = [row for row in (_sector_strength_row(r) for r in raw_rows) if row is not None]
+    # 去重：同名板块（去后缀 Ⅱ/Ⅲ… 后）保留主力净额绝对值最大的一条。
+    seen: dict[str, SectorStrengthRow] = {}
+    for row in rows:
+        base = _strip_sector_suffix(row.name)
+        prev = seen.get(base)
+        if prev is None or _abs_or_zero(row.main_net_inflow) > _abs_or_zero(prev.main_net_inflow):
+            seen[base] = row
+    rows = list(seen.values())
+
+    return SectorStrengthResult(
+        date=target_date,
+        rows=rows,
+        cache_source=cache_source,
+        warnings=warnings,
+    )
+
+
+_SECTOR_SUFFIX_RE = re.compile(r"[ⅡⅢⅣⅤⅥⅦⅧⅨⅩ]+$")
+
+
+def _strip_sector_suffix(name: str) -> str:
+    return _SECTOR_SUFFIX_RE.sub("", name).strip()
+
+
+def _abs_or_zero(value: float | None) -> float:
+    return abs(value) if value is not None else 0.0
+
+
+def get_sector_fund_flow_history(
+    codes: list[str],
+    curr_date: str = "",
+    days: int = 5,
+    *,
+    eastmoney: EastmoneyClient | None = None,
+    settings: AStockSettings | None = None,
+) -> SectorFundFlowHistoryResult:
+    """多板块近 N 日主力资金流历史（并发拉取 + 单板块缓存回退）。
+
+    并发逻辑（``ThreadPoolExecutor(max_workers=8)``、任一失败即停止后续
+    实时请求转缓存）从 daily-review ``sector_strength.py`` 移植到数据层。
+    返回 ``SectorFundFlowHistoryResult``，其中 ``history_by_code`` 映射每个
+    板块到 ``[{date, main_net_inflow(元)}, ...]``；拉取失败且无缓存的板块
+    映射到空列表。
+
+    板块代码不经 ``resolve_ticker``（非 A 股 ticker）。
+    """
+    from astock_data.clients import eastmoney as _em
+
+    client = _eastmoney_client(eastmoney, settings)
+    target_date = _target_trade_date(curr_date)
+    cache = _structured_cache(settings)
+    hour_key = f"{target_date}-{dt.datetime.now().hour:02d}"
+
+    request_gate = threading.Lock()
+    stop_event = threading.Event()
+
+    def pull_one(code: str) -> tuple[str, list[dict[str, Any]]]:
+        secid = f"90.{code.lower()}"
+        with request_gate:
+            if stop_event.is_set():
+                cached = _read_history_cache(cache, code, hour_key, target_date)
+                return code, cached or []
+            try:
+                values = _em.fetch_sector_fund_flow_history(secid, days=days, client=client)
+                try:
+                    cache.write_general(
+                        "sector_history",
+                        f"{code}:{hour_key}",
+                        target_date,
+                        {"values": values},
+                    )
+                except Exception:  # noqa: BLE001 - cache write failure is non-fatal
+                    pass
+                return code, values
+            except Exception:  # noqa: BLE001 - trigger fallback for the rest
+                stop_event.set()
+                cached = _read_history_cache(cache, code, hour_key, target_date)
+                return code, cached or []
+
+    histories: dict[str, list[dict[str, Any]]] = {code: [] for code in codes}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(pull_one, code): code for code in codes}
+        for future, code in futures.items():
+            try:
+                result_code, values = future.result(timeout=12)
+                histories[result_code] = values
+            except Exception:  # noqa: BLE001 - per-code failure degrades to empty
+                stop_event.set()
+                cached = _read_history_cache(cache, code, hour_key, target_date)
+                histories[code] = cached or []
+    return SectorFundFlowHistoryResult(
+        date=target_date,
+        days=days,
+        history_by_code=histories,
+        warnings=[],
+    )
+
+
+def _read_history_cache(
+    cache: SQLiteStructuredCache,
+    code: str,
+    hour_key: str,
+    target_date: str,
+) -> list[dict[str, Any]] | None:
+    """Return cached history values for one sector code, fallback up to 3 days."""
+    try:
+        cached = cache.read_latest(
+            "sector_history",
+            f"{code}:{hour_key}",
+            target_date,
+            max_fallback_days=3,
+        )
+    except Exception:  # noqa: BLE001 - cache read failure is non-fatal
+        return None
+    if cached is None:
+        return None
+    payload, _actual = cached
+    values = payload.get("values") if isinstance(payload, dict) else None
+    return values if isinstance(values, list) else None
+
+
 __all__ = [
     "get_concept_blocks",
     "get_dragon_tiger_board",
     "get_fund_flow",
     "get_industry_comparison",
     "get_lockup_expiry",
+    "get_sector_fund_flow",
+    "get_sector_fund_flow_history",
+    "get_sector_strength",
 ]
+
+
+

@@ -181,3 +181,46 @@ def test_sqlite_structured_cache_stores_payload_as_json(tmp_path):
         ).fetchone()[0]
 
     assert json.loads(payload_json) == payload
+
+
+# --------------------------------------------------------------------------- #
+# General-key API (sector codes / ETF codes / hour buckets)
+# --------------------------------------------------------------------------- #
+def test_sqlite_structured_cache_general_roundtrips_sector_code(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    cache.write_general("sector_strength", "BK0447", "2026-07-20", {"change_pct": 2.5})
+    assert cache.read_general("sector_strength", "BK0447", "2026-07-20") == {"change_pct": 2.5}
+
+
+def test_sqlite_structured_cache_general_accepts_hour_bucket(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    cache.write_general("sector_strength", "2026-07-20-15", "2026-07-20", {"rows": []})
+    assert cache.read_general("sector_strength", "2026-07-20-15", "2026-07-20") == {"rows": []}
+
+
+def test_sqlite_structured_cache_general_rejects_traversal(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    with pytest.raises(InvalidTickerError):
+        cache.write_general("sector", "../evil", "2026-07-20", {})
+
+
+def test_sqlite_structured_cache_general_rejects_empty(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    with pytest.raises(InvalidTickerError):
+        cache.write_general("sector", "", "2026-07-20", {})
+
+
+def test_sqlite_structured_cache_read_latest_falls_back(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    # Only yesterday has a snapshot; today is missing.
+    cache.write_general("sector_strength", "2026-07-19-15", "2026-07-19", {"rows": [{"x": 1}]})
+    hit = cache.read_latest("sector_strength", "2026-07-19-15", "2026-07-20", max_fallback_days=3)
+    assert hit is not None
+    payload, actual_date = hit
+    assert payload == {"rows": [{"x": 1}]}
+    assert actual_date == "2026-07-19"
+
+
+def test_sqlite_structured_cache_read_latest_returns_none_when_no_hit(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    assert cache.read_latest("sector_strength", "2026-07-20-15", "2026-07-20", max_fallback_days=3) is None

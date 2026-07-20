@@ -20,12 +20,13 @@ from astock_data.models.base import Ticker
 
 pytestmark = pytest.mark.unit
 
-# The 20 public get_* entrypoints (sorted for stable diffs).
+# The 24 public get_* entrypoints (sorted for stable diffs).
 GET_FUNCS = [
     "get_balance_sheet",
     "get_cashflow",
     "get_concept_blocks",
     "get_dragon_tiger_board",
+    "get_etf_daily",
     "get_fund_flow",
     "get_fundamentals",
     "get_global_news",
@@ -41,36 +42,38 @@ GET_FUNCS = [
     "get_northbound_flow",
     "get_profit_forecast",
     "get_sector_fund_flow",
+    "get_sector_fund_flow_history",
+    "get_sector_strength",
     "get_stock_amount",
     "get_stock_data",
 ]
 
-PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 22 total
+PUBLIC_FUNCS = ["resolve_ticker", *GET_FUNCS]  # 25 total
 
 
 # --------------------------------------------------------------------------- #
 # __all__ sizing
 # --------------------------------------------------------------------------- #
-def test_api_all_has_exactly_22_names():
-    assert len(api.__all__) == 22
+def test_api_all_has_exactly_25_names():
+    assert len(api.__all__) == 25
     assert set(api.__all__) == set(PUBLIC_FUNCS)
 
 
-def test_services_all_has_exactly_21_names():
-    assert len(services.__all__) == 21
+def test_services_all_has_exactly_24_names():
+    assert len(services.__all__) == 24
     assert set(services.__all__) == set(GET_FUNCS)
 
 
 # --------------------------------------------------------------------------- #
 # importability from the three canonical surfaces
 # --------------------------------------------------------------------------- #
-def test_all_19_importable_from_top_level():
+def test_all_25_importable_from_top_level():
     for name in PUBLIC_FUNCS:
         assert hasattr(astock_data, name), f"astock_data missing {name}"
         assert callable(getattr(astock_data, name))
 
 
-def test_all_19_importable_from_api_module():
+def test_all_25_importable_from_api_module():
     for name in PUBLIC_FUNCS:
         assert hasattr(api, name), f"astock_data.api missing {name}"
         assert callable(getattr(api, name))
@@ -291,3 +294,149 @@ def test_kline_funcs_in_all():
     from astock_data import api as _api
     assert "get_index_kline" in _api.__all__
     assert "get_stock_amount" in _api.__all__
+
+
+# --------------------------------------------------------------------------- #
+# get_sector_strength / get_sector_fund_flow_history / get_etf_daily
+# (daily-review step-2 「定方向」data-source migration into the data layer)
+# --------------------------------------------------------------------------- #
+from astock_data.models.signals import (  # noqa: E402
+    SectorFundFlowHistoryResult,
+    SectorStrengthResult,
+)
+from astock_data.models.market import EtfDailyResult  # noqa: E402
+from astock_data.clients import eastmoney as _em  # noqa: E402
+
+
+def _clist_payload():
+    return {
+        "data": {
+            "diff": [
+                {"f12": "BK0447", "f14": "半导体", "f3": 2.5, "f6": 3e9,
+                 "f62": 1e8, "f184": 1.5, "f104": 80, "f105": 10},
+                {"f12": "BK0733", "f14": "半导体Ⅱ", "f3": 1.2, "f6": 1e9,
+                 "f62": 5e7, "f184": 0.8, "f104": 40, "f105": 30},
+            ]
+        }
+    }
+
+
+def test_sector_strength_normal(monkeypatch, tmp_path):
+    """Happy path: clist returns rows -> SectorStrengthResult with dedup."""
+    monkeypatch.setenv("ASTOCK_CACHE_DIR", str(tmp_path))
+    from astock_data.config import get_settings
+    get_settings.cache_clear()
+
+    monkeypatch.setattr(_em.EastmoneyClient, "push2", lambda self, path, params: _clist_payload())
+    from astock_data.api import get_sector_strength
+    result = get_sector_strength("2026-07-20")
+    assert isinstance(result, SectorStrengthResult)
+    # Dedup: 半导体 and 半导体Ⅱ collapse to one row keeping the larger |f62|.
+    assert len(result.rows) == 1
+    assert result.rows[0].name == "半导体"
+    assert result.rows[0].amount == 3e9
+    assert result.rows[0].up_count == 80
+    assert result.cache_source is None
+
+
+def test_sector_strength_falls_back_to_cache(monkeypatch, tmp_path):
+    """Upstream push2 raises -> cache fallback surfaces prior snapshot."""
+    monkeypatch.setenv("ASTOCK_CACHE_DIR", str(tmp_path))
+    from astock_data.config import get_settings
+    get_settings.cache_clear()
+
+    def _boom(self, path, params):
+        raise ConnectionError("blocked by anti-crawler")
+    monkeypatch.setattr(_em.EastmoneyClient, "push2", _boom)
+
+    # Seed a cache snapshot for today.
+    from astock_data.cache import SQLiteStructuredCache
+    target = "2026-07-20"
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    cache.write_general(
+        "sector_strength",
+        f"{target}-15",
+        target,
+        {"rows": [{"f12": "BK0447", "f14": "半导体", "f3": 2.5}]},
+    )
+
+    from astock_data.api import get_sector_strength
+    result = get_sector_strength(target)
+    assert result.cache_source == target
+    assert len(result.rows) == 1
+    assert any("缓存回退" in w for w in result.warnings)
+
+
+def test_sector_strength_empty_when_no_cache(monkeypatch, tmp_path):
+    monkeypatch.setenv("ASTOCK_CACHE_DIR", str(tmp_path))
+    from astock_data.config import get_settings
+    get_settings.cache_clear()
+
+    def _boom(self, path, params):
+        raise ConnectionError("down")
+    monkeypatch.setattr(_em.EastmoneyClient, "push2", _boom)
+
+    from astock_data.api import get_sector_strength
+    result = get_sector_strength("2026-07-20")
+    assert result.rows == []
+    assert any("无可用缓存" in w for w in result.warnings)
+
+
+def test_sector_fund_flow_history_normal(monkeypatch, tmp_path):
+    """Happy path: each code returns its history list."""
+    monkeypatch.setenv("ASTOCK_CACHE_DIR", str(tmp_path))
+    from astock_data.config import get_settings
+    get_settings.cache_clear()
+
+    hist = [{"date": f"2026-07-{20 - i}", "main_net_inflow": 1e8} for i in range(5)]
+    monkeypatch.setattr(
+        _em, "fetch_sector_fund_flow_history",
+        lambda secid, days=5, **kw: hist,
+    )
+    from astock_data.api import get_sector_fund_flow_history
+    result = get_sector_fund_flow_history(["BK0447", "BK0733"], "2026-07-20", days=5)
+    assert isinstance(result, SectorFundFlowHistoryResult)
+    assert set(result.history_by_code.keys()) == {"BK0447", "BK0733"}
+    assert len(result.history_by_code["BK0447"]) == 5
+
+
+def test_sector_fund_flow_history_partial_failure(monkeypatch, tmp_path):
+    """One code raising -> that code maps to [] but others still resolve."""
+    monkeypatch.setenv("ASTOCK_CACHE_DIR", str(tmp_path))
+    from astock_data.config import get_settings
+    get_settings.cache_clear()
+
+    def _hist(secid, days=5, **kw):
+        if "bk0733" in secid:
+            raise RuntimeError("upstream down")
+        return [{"date": "2026-07-20", "main_net_inflow": 1e8}]
+    monkeypatch.setattr(_em, "fetch_sector_fund_flow_history", _hist)
+    from astock_data.api import get_sector_fund_flow_history
+    result = get_sector_fund_flow_history(["BK0447", "BK0733"], "2026-07-20")
+    assert result.history_by_code["BK0447"]
+    assert result.history_by_code["BK0733"] == []
+
+
+def test_etf_daily_normal(monkeypatch):
+    klines = [{"date": "2026-07-20", "open": 1.0, "high": 1.1, "low": 0.9,
+               "close": 1.05, "volume": 1000.0, "amount": 1050.0}]
+    monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
+    from astock_data.api import get_etf_daily
+    result = get_etf_daily(["512480", "159995"])
+    assert isinstance(result, EtfDailyResult)
+    assert len(result.bars_by_code["512480"]) == 1
+    assert result.bars_by_code["512480"][0].amount == 1050.0
+
+
+def test_etf_daily_rejects_unknown_code():
+    from astock_data.api import get_etf_daily
+    result = get_etf_daily(["999999"])
+    assert result.bars_by_code["999999"] == []
+    assert any("不在行业ETF映射内" in w for w in result.warnings)
+
+
+def test_new_sector_funcs_in_all():
+    from astock_data import api as _api
+    assert "get_sector_strength" in _api.__all__
+    assert "get_sector_fund_flow_history" in _api.__all__
+    assert "get_etf_daily" in _api.__all__
