@@ -10,8 +10,10 @@ from pathlib import Path
 import pytest
 import requests
 
+from astock_data.clients._http import _DESKTOP_UA_POOL
 from astock_data.clients.tencent import TencentClient, _market_prefix
-from astock_data.errors import DataSourceError
+from astock_data.config import AStockSettings
+from astock_data.errors import DataSourceError, RateLimitError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -110,6 +112,20 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
     assert bank["limit_down"] == pytest.approx(9.00)
 
 
+def test_quote_uses_browser_headers(requests_mocker) -> None:
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sh688017",
+        content=_load_tencent_fixture(),
+    )
+
+    TencentClient().quote(["688017"])
+
+    headers = requests_mocker.request_history[0].headers
+    assert headers["User-Agent"] != "Mozilla/5.0"
+    assert headers["User-Agent"] in _DESKTOP_UA_POOL
+    assert headers["Referer"] == "https://gu.qq.com/"
+
+
 def test_index_snapshots_parse_gbk_payload(requests_mocker) -> None:
     payload = (
         _tencent_index_line("sh000001", "上证指数", "3000.00", "2990.00", "0.33")
@@ -174,6 +190,20 @@ def test_quote_http_error_raises_datasource_error(requests_mocker) -> None:
         client.quote(["688017"])
 
 
+def test_quote_retries_twice_before_rate_limit_error(
+    requests_mocker,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://qt.gtimg.cn/q=sh688017"
+    requests_mocker.get(url, status_code=503)
+    monkeypatch.setattr("astock_data.clients._http.time.sleep", lambda _delay: None)
+
+    with pytest.raises(RateLimitError):
+        TencentClient().quote(["688017"])
+
+    assert requests_mocker.call_count == 3
+
+
 def test_quote_unparseable_payload_yields_empty(requests_mocker) -> None:
     # Valid GBK-decodable body but no quote lines -> empty result (no data).
     requests_mocker.get(
@@ -228,3 +258,14 @@ def test_injected_session_is_used(requests_mocker) -> None:
     client = TencentClient(session=session)
     assert client.session is session
     assert client.quote(["000001"])["000001"]["price"] == pytest.approx(10.00)
+
+
+def test_session_uses_configured_proxy() -> None:
+    settings = AStockSettings(http_proxy="http://127.0.0.1:7890")
+
+    session = TencentClient(settings=settings).session
+
+    assert session.proxies == {
+        "http": "http://127.0.0.1:7890",
+        "https": "http://127.0.0.1:7890",
+    }

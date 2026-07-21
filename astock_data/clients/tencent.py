@@ -11,7 +11,9 @@ from typing import Optional
 
 import requests
 
-from ..errors import DataSourceError
+from ..config import AStockSettings, get_settings
+from ..errors import DataSourceError, RateLimitError
+from ._http import apply_proxy, build_headers, pick_user_agent, throttled_get
 
 __all__ = ["TencentClient"]
 
@@ -108,23 +110,33 @@ class TencentClient:
         mocking). When ``None`` a fresh session is created on demand.
     timeout:
         Per-request timeout in seconds.
+    settings:
+        Optional runtime settings for timeout, user-agent pool, and proxy.
     """
 
     QUOTE_URL = "https://qt.gtimg.cn/q="
-    USER_AGENT = "Mozilla/5.0"
+    USER_AGENT = None
 
     def __init__(
         self,
         session: Optional[requests.Session] = None,
-        timeout: float = 10.0,
+        timeout: float | None = None,
+        settings: AStockSettings | None = None,
     ) -> None:
+        self._settings = settings if settings is not None else get_settings()
         self._session = session
-        self._timeout = timeout
+        self._ua = pick_user_agent(self._settings)
+        self._timeout = (
+            timeout if timeout is not None else self._settings.request_timeout
+        )
+        if self._session is not None:
+            apply_proxy(self._session, self._settings)
 
     @property
     def session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            apply_proxy(self._session, self._settings)
         return self._session
 
     def quote(self, codes: list[str]) -> dict[str, dict]:
@@ -175,13 +187,17 @@ class TencentClient:
         url = self.QUOTE_URL + ",".join(prefixed)
 
         try:
-            resp = self.session.get(
-                url,
-                headers={"User-Agent": self.USER_AGENT},
+            resp = throttled_get(
+                vendor="tencent",
+                session=self.session,
+                url=url,
+                min_interval=0.5,
                 timeout=self._timeout,
+                headers=build_headers("tencent", user_agent=self._ua),
             )
-            resp.raise_for_status()
-        except requests.RequestException as exc:  # network / HTTP errors
+        except RateLimitError:
+            raise
+        except DataSourceError as exc:
             raise DataSourceError(
                 f"Tencent quote request failed: {exc}"
             ) from exc
