@@ -26,10 +26,18 @@ pytestmark = pytest.mark.unit
 # Fakes.
 # ---------------------------------------------------------------------------
 class _FakeResponse:
-    def __init__(self, status_code: int = 200, *, json_data=None, text: str = ""):
+    def __init__(
+        self,
+        status_code: int = 200,
+        *,
+        json_data=None,
+        text: str = "",
+        headers: dict[str, str] | None = None,
+    ):
         self.status_code = status_code
         self._json = json_data
         self.text = text if text else (json.dumps(json_data) if json_data is not None else "")
+        self.headers = headers or {}
 
     def json(self):
         if self._json is None:
@@ -49,11 +57,17 @@ class _FakeSession:
     in flight (proving the call happens inside the critical section).
     """
 
-    def __init__(self, response: _FakeResponse | None = None, lock_observer=None):
+    def __init__(
+        self,
+        response: _FakeResponse | None = None,
+        lock_observer=None,
+        outcomes: list[_FakeResponse | requests.RequestException] | None = None,
+    ):
         self.headers: dict[str, str] = {}
         self.response = response or _FakeResponse(json_data={"ok": True})
         self.calls: list[dict] = []
         self.lock_observer = lock_observer
+        self.outcomes = outcomes or []
 
     def get(self, url, params=None, headers=None, timeout=None, **kwargs):
         if self.lock_observer is not None:
@@ -67,6 +81,11 @@ class _FakeSession:
                 "ts": time.time(),
             }
         )
+        if self.outcomes:
+            outcome = self.outcomes.pop(0)
+            if isinstance(outcome, requests.RequestException):
+                raise outcome
+            return outcome
         return self.response
 
 
@@ -205,6 +224,16 @@ def test_datacenter_parses_result_data(requests_mocker, client):
     assert last.qs["reportname"] == ["rpt_dragon_tiger"]
     assert last.qs["source"] == ["web"]
     assert last.qs["pagesize"] == ["50"]
+
+
+def test_datacenter_does_not_leak_push2_referer(requests_mocker, client):
+    requests_mocker.get(em_module.DATACENTER_URL, json={"result": {"data": []}})
+
+    client.datacenter("rpt_x")
+
+    assert requests_mocker.request_history[-1].headers.get("Referer") != (
+        "https://quote.eastmoney.com/"
+    )
 
 
 def test_datacenter_empty_payload_returns_empty_list(requests_mocker, client):
@@ -441,10 +470,14 @@ def test_http_500_raises_data_source_error(requests_mocker, client):
         client.datacenter("rpt_x")
 
 
-def test_http_429_raises_rate_limit_error(requests_mocker, client):
+def test_http_429_exhaustion_raises_rate_limit_error(requests_mocker, client, monkeypatch):
     requests_mocker.get(em_module.DATACENTER_URL, status_code=429)
+    monkeypatch.setattr(em_module.time, "sleep", lambda _seconds: None)
+
     with pytest.raises(RateLimitError):
         client.datacenter("rpt_x")
+
+    assert len(requests_mocker.request_history) == 1 + em_module._MAX_RETRIES
 
 
 def test_transport_error_raises_data_source_error(client, monkeypatch):
@@ -525,6 +558,89 @@ def test_get_succeeds_on_retry(monkeypatch):
     assert response.json() == {"ok": True}
 
 
+def test_transport_retry_canary_preserves_backoff_sequence(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            requests.ConnectionError("first reset"),
+            requests.ConnectionError("second reset"),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(em_module.time, "sleep", sleep_calls.append)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert len(session.calls) == 3
+    assert sleep_calls == em_module._RETRY_DELAYS
+
+
+def test_transport_retry_canary_exhausts_after_three_attempts(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            requests.ConnectionError("first reset"),
+            requests.ConnectionError("second reset"),
+            requests.ConnectionError("third reset"),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    monkeypatch.setattr(em_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(DataSourceError):
+        client.get(em_module.DATACENTER_URL)
+
+    assert len(session.calls) == 1 + em_module._MAX_RETRIES
+
+
+def test_get_retries_429_until_success(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            _FakeResponse(status_code=429),
+            _FakeResponse(status_code=429),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    monkeypatch.setattr(em_module.time, "sleep", lambda _seconds: None)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert len(session.calls) == 3
+
+
+def test_get_honors_retry_after_for_429(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            _FakeResponse(status_code=429, headers={"Retry-After": "5"}),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(em_module.time, "sleep", sleep_calls.append)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert sleep_calls == [5.0]
+
+
+def test_get_raises_rate_limit_error_after_429_retries(monkeypatch):
+    session = _FakeSession(
+        outcomes=[_FakeResponse(status_code=429) for _ in range(3)]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    monkeypatch.setattr(em_module.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(RateLimitError):
+        client.get(em_module.DATACENTER_URL)
+
+    assert len(session.calls) == 1 + em_module._MAX_RETRIES
+
+
 def test_non_json_body_raises_data_source_error(requests_mocker, client):
     requests_mocker.get(em_module.DATACENTER_URL, text="<html>not json</html>")
     with pytest.raises(DataSourceError):
@@ -537,11 +653,25 @@ def test_non_json_body_raises_data_source_error(requests_mocker, client):
 def test_defaults_derived_from_settings():
     from astock_data.config import AStockSettings
 
-    settings = AStockSettings()
+    settings = AStockSettings(user_agent_pool=["UA-T6"])
     c = EastmoneyClient(settings=settings)
     assert c.min_interval == settings.eastmoney_min_interval
     assert c.timeout == settings.request_timeout
-    assert c._session.headers["User-Agent"] == settings.user_agent
+    assert c._session.headers["User-Agent"] == "UA-T6"
+
+
+def test_proxy_derived_from_settings():
+    from astock_data.config import AStockSettings
+
+    session = _FakeSession()
+    settings = AStockSettings(http_proxy="http://proxy.test:8080")
+
+    EastmoneyClient(settings=settings, session=session)
+
+    assert session.proxies == {
+        "http": "http://proxy.test:8080",
+        "https": "http://proxy.test:8080",
+    }
 
 
 def test_no_eastmoney_url_leaks_outside_constants_module():
