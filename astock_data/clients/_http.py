@@ -36,8 +36,6 @@ _RATE_LIMIT_DELAYS: Final[tuple[float, ...]] = (2.0, 4.0)
 _DEFAULT_REFERERS: Final[dict[str, str]] = {
     "sina": "https://finance.sina.com.cn/",
     "tencent": "https://gu.qq.com/",
-    "push2": "https://quote.eastmoney.com/",
-    "push2his": "https://quote.eastmoney.com/",
 }
 
 _VENDOR_LOCKS: dict[str, threading.Lock] = {}
