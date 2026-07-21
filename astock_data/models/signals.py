@@ -86,6 +86,46 @@ class SectorFundFlowResult(BaseModel):
     warnings: list[str]
 
 
+class SectorStrengthRow(BaseModel):
+    """One industry sector's same-day strength + fund-flow snapshot.
+
+    Fields mirror the Eastmoney clist ``m:90+t:2`` payload: ``main_net_inflow``
+    and ``amount`` are in 元 (raw, not converted to 亿).
+    """
+
+    code: str
+    name: str
+    change_pct: float | None = None
+    amount: float | None = None
+    main_net_inflow: float | None = None
+    main_inflow_pct: float | None = None
+    up_count: int | None = None
+    down_count: int | None = None
+
+
+class SectorStrengthResult(BaseModel):
+    """6-dimension sector-strength ranking for the daily-review step-2 workflow."""
+
+    date: str
+    rows: list[SectorStrengthRow]
+    cache_source: str | None = None
+    warnings: list[str]
+
+
+class SectorFundFlowHistoryResult(BaseModel):
+    """Multi-sector recent daily main fund-flow history (concurrent batch fetch).
+
+    ``history_by_code`` maps each requested sector code to its recent daily
+    main-net-inflow series ``[{date, main_net_inflow(元)}, ...]``. Codes whose
+    upstream fetch failed AND had no cache fall back map to an empty list.
+    """
+
+    date: str
+    days: int
+    history_by_code: dict[str, list[dict]]
+    warnings: list[str] = []
+
+
 class DragonTigerEvent(BaseModel):
     date: dt.date | None = None
     reason: str | None = None

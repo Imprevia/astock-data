@@ -7,6 +7,7 @@ from .fundamentals import (
 )
 from .market import (
     BoardItem,
+    EtfDailyResult,
     IndexKlineResult,
     IndexSnapshot,
     IndicatorPoint,
@@ -35,6 +36,9 @@ from .signals import (
     LockupRecord,
     NorthboundFlowResult,
     ProfitForecastResult,
+    SectorFundFlowHistoryResult,
+    SectorStrengthResult,
+    SectorStrengthRow,
     ShareholderResult,
 )
 
@@ -44,6 +48,7 @@ __all__ = [
     "DragonTigerEvent",
     "DragonTigerResult",
     "DragonTigerSeat",
+    "EtfDailyResult",
     "FinancialRow",
     "FinancialStatementResult",
     "BoardItem",
@@ -72,6 +77,9 @@ __all__ = [
     "Quote",
     "ResultBase",
     "ResultMeta",
+    "SectorFundFlowHistoryResult",
+    "SectorStrengthResult",
+    "SectorStrengthRow",
     "ShareholderResult",
     "StockAmountResult",
     "StockDataResult",

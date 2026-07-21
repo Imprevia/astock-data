@@ -18,6 +18,7 @@ from .fundamentals import (
     get_income_statement,
 )
 from .market_data import (
+    get_etf_daily,
     get_index_kline,
     get_indicators,
     get_stock_amount,
@@ -41,6 +42,8 @@ from .signals_b import (
     get_industry_comparison,
     get_lockup_expiry,
     get_sector_fund_flow,
+    get_sector_fund_flow_history,
+    get_sector_strength,
 )
 
 __all__ = [
@@ -50,6 +53,7 @@ __all__ = [
     "get_fundamentals",
     "get_income_statement",
     # market_data
+    "get_etf_daily",
     "get_index_kline",
     "get_indicators",
     "get_market_breadth",
@@ -70,4 +74,6 @@ __all__ = [
     "get_industry_comparison",
     "get_lockup_expiry",
     "get_sector_fund_flow",
+    "get_sector_fund_flow_history",
+    "get_sector_strength",
 ]

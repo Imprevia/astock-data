@@ -1,7 +1,7 @@
 """astock_data — A-share market data service.
 
-Top-level package exposing the 19 public functions:
-18 ``get_*`` data entrypoints plus :func:`resolve_ticker`.
+Top-level package exposing the 25 public functions:
+24 ``get_*`` data entrypoints plus :func:`resolve_ticker`.
 All return structured Pydantic models (never plain ``str``).
 """
 
@@ -10,6 +10,7 @@ from .api import (
     get_cashflow,
     get_concept_blocks,
     get_dragon_tiger_board,
+    get_etf_daily,
     get_fund_flow,
     get_fundamentals,
     get_global_news,
@@ -25,6 +26,8 @@ from .api import (
     get_northbound_flow,
     get_profit_forecast,
     get_sector_fund_flow,
+    get_sector_fund_flow_history,
+    get_sector_strength,
     get_stock_amount,
     get_stock_data,
     resolve_ticker,
@@ -36,12 +39,13 @@ __all__ = [
     "__version__",
     # resolver (1)
     "resolve_ticker",
-    # market_data (4)
+    # market_data (5)
     "get_stock_data",
     "get_indicators",
     "get_market_breadth",
     "get_index_kline",
     "get_stock_amount",
+    "get_etf_daily",
     # fundamentals (4)
     "get_fundamentals",
     "get_balance_sheet",
@@ -55,10 +59,12 @@ __all__ = [
     "get_profit_forecast",
     "get_hot_stocks",
     "get_northbound_flow",
-    # signals_b (6)
+    # signals_b (8)
     "get_concept_blocks",
     "get_fund_flow",
     "get_sector_fund_flow",
+    "get_sector_fund_flow_history",
+    "get_sector_strength",
     "get_dragon_tiger_board",
     "get_lockup_expiry",
     "get_industry_comparison",

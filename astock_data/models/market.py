@@ -60,6 +60,19 @@ class StockAmountResult(ResultBase):
     bars: list[KlineBar]
 
 
+class EtfDailyResult(BaseModel):
+    """Daily K-line bars for a set of ETF codes (e.g. industry ETFs).
+
+    ``bars_by_code`` maps each requested ETF code to its recent daily
+    ``KlineBar`` list (oldest-first). Missing codes map to an empty list.
+    Used by the daily-review step-2 ETF-strength dimension as the akshare-free
+    replacement.
+    """
+
+    bars_by_code: dict[str, list[KlineBar]]
+    warnings: list[str] = []
+
+
 class IndicatorPoint(BaseModel):
     date: str
     value: float | str
