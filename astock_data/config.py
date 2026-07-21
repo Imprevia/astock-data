@@ -31,6 +31,8 @@ class AStockSettings(BaseSettings):
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0 Safari/537.36 astock-data/0.1.0"
     )
+    http_proxy: str | None = None
+    user_agent_pool: list[str] | None = None
 
     @field_validator("cache_dir", mode="after")
     @classmethod
