@@ -153,7 +153,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
 
-东方财富请求统一经过线程安全限流入口，默认最小间隔 1 秒并带随机抖动，减少批量请求触发风控的概率。概念板块数据已从下线的百度 PAE 迁移至东方财富 `slist`。
+东方财富请求统一经过线程安全限流入口，默认最小间隔 1 秒并带随机抖动，同时启用 UA 随机化及 429/503 自动重试（读取 `Retry-After`），减少批量请求触发风控的概率。腾讯财经请求带 `Referer` 并启用 UA 随机化；新浪财经 K 线和财报请求带 `Referer`，并启用 UA 随机化及 429/503 重试。概念板块数据已从下线的百度 PAE 迁移至东方财富 `slist`。
 
 `get_market_breadth()` 按能力降级：指数快照依次尝试东方财富、腾讯、新浪；涨跌停家数依次尝试东方财富全市场行情、腾讯全市场候选、腾讯不可用时的新浪分页行情。返回结果的 `raw.sources` 会记录 `indices`、`limit_stats`、`board_ladders` 的实际来源；如果只能返回部分结果，`warnings` 会说明失败来源、fallback 来源或连板推导跳过原因。新浪分页属于低频兜底路径，重复调用可能触发上游临时限流。
 
@@ -164,6 +164,8 @@ opencode/Claude Code 风格 MCP 配置片段：
 | `ASTOCK_CACHE_DIR` | 缓存目录，默认使用用户缓存目录下的 `astock-data` |
 | `ASTOCK_EASTMONEY_MIN_INTERVAL` | 东方财富请求最小间隔，默认约 1 秒，批量任务可调大 |
 | `ASTOCK_REQUEST_TIMEOUT` | HTTP 请求超时时间 |
+| `ASTOCK_HTTP_PROXY` | 可选 HTTP 代理，应用于所有 HTTP 数据源请求，默认关闭 |
+| `ASTOCK_USER_AGENT_POOL` | 可选自定义 UA 池，JSON 数组，默认使用内置桌面 UA |
 | `ASTOCK_LIVE_TESTS` | 设为 `1` 时启用 live smoke 测试 |
 
 缓存策略：K 线使用 CSV 缓存，结构化数据使用 SQLite JSON 缓存。`--no-cache` 会把本次 CLI 调用重定向到临时缓存目录，不污染真实缓存。
