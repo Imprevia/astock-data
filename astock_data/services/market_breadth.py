@@ -28,7 +28,7 @@ _INDEX_SECIDS: tuple[tuple[str, str, str], ...] = (
 )
 _DERIVED_WARNING = "board_ladders are derived from K-line threshold rules and may differ from vendor terminal口径"
 _BOARD_SKIP_WARNING = "board_ladders skipped because no current limit-up stock set was available"
-_SUPPORTED_KLINE_PREFIXES = ("0", "3", "6", "8")
+_SUPPORTED_KLINE_PREFIXES = ("0", "3", "4", "6", "8", "9")
 _DEFAULT_LOOKBACK_DAYS = 20
 
 
@@ -302,7 +302,7 @@ def get_market_breadth(
     stock_data_func: Callable[..., StockDataResult] = get_stock_data,
 ) -> MarketBreadthResult:
     target = _target_date(date)
-    client = eastmoney or EastmoneyClient()
+    client = eastmoney or EastmoneyClient(timeout=3.0, max_retries=0)
     tencent = TencentClient()
     sina = SinaClient()
     warnings = [_DERIVED_WARNING]

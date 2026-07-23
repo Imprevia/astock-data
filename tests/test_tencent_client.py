@@ -57,6 +57,8 @@ pytestmark = pytest.mark.unit
         ("300750", "sz"),
         ("835185", "bj"),
         ("870007", "bj"),
+        ("920267", "bj"),
+        ("430047", "bj"),
     ],
 )
 def test_market_prefix_mapping(code: str, expected: str) -> None:
@@ -83,7 +85,7 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
     # Contract field keys are all present.
     assert set(tech.keys()) == {
         "name", "price", "last_close", "open", "change_pct", "high", "low",
-        "turnover_pct", "pe_ttm", "mcap_yi", "float_mcap_yi", "pb",
+        "volume", "amount_wan", "turnover_pct", "pe_ttm", "mcap_yi", "float_mcap_yi", "pb",
         "limit_up", "limit_down", "pe_static",
     }
     # Spot-check the contract values.
@@ -110,6 +112,25 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
     assert bank["pb"] == pytest.approx(0.50)
     assert bank["limit_up"] == pytest.approx(11.00)
     assert bank["limit_down"] == pytest.approx(9.00)
+
+
+def test_quote_parses_volume_and_amount_in_upstream_units(requests_mocker) -> None:
+    values = [""] * 53
+    values[1] = "长电科技"
+    values[2] = "600584"
+    values[3] = "85.78"
+    values[36] = "2620385"
+    values[37] = "2245466"
+    payload = 'v_sh600584="' + "~".join(values) + '";'
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sh600584",
+        content=payload.encode("gbk"),
+    )
+
+    result = TencentClient().quote(["600584"])
+
+    assert result["600584"]["volume"] == pytest.approx(2620385.0)
+    assert result["600584"]["amount_wan"] == pytest.approx(2245466.0)
 
 
 def test_quote_uses_browser_headers(requests_mocker) -> None:

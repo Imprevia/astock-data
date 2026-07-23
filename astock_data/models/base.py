@@ -27,6 +27,6 @@ class Ticker(BaseModel):
     @field_validator("code")
     @classmethod
     def validate_code(cls, value: str) -> str:
-        if not re.fullmatch(r"^[0368]\d{5}$", value):
+        if not re.fullmatch(r"^[034689]\d{5}$", value):
             raise ValueError("code must be a 6-digit A-share ticker")
         return value

@@ -40,6 +40,8 @@ def test_ticker_code_validation_accepts_supported_markets() -> None:
     assert Ticker(code="688017", market="sh").code == "688017"
     assert Ticker(code="000001", market="sz").code == "000001"
     assert Ticker(code="835185", market="bj").code == "835185"
+    assert Ticker(code="920267", market="bj").code == "920267"
+    assert Ticker(code="430047", market="bj").code == "430047"
 
 
 def test_ticker_code_validation_rejects_path_like_values() -> None:

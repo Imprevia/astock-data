@@ -26,8 +26,8 @@ from astock_data.models.base import Ticker
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
     from collections.abc import Mapping, Sequence
 
-# 6-digit A-share ticker: SH (6/9), BJ (8), SZ (0/3).
-_CODE_RE = re.compile(r"^[0368]\d{5}$")
+# 6-digit A-share ticker: SH (6), BJ (43/8/920), SZ (0/3).
+_CODE_RE = re.compile(r"^[034689]\d{5}$")
 
 # Recognized exchange decorations to strip before validation.
 _SUFFIXES = (".SH", ".SZ", ".BJ")
@@ -42,12 +42,11 @@ _CJK_RE = re.compile(
 
 
 def _market_for_code(code: str) -> str:
-    """Derive the exchange from the first digit: 6/9→sh, 8→bj, else→sz."""
-    head = code[0]
-    if head in ("6", "9"):
-        return "sh"
-    if head == "8":
+    """Derive the exchange from the supported A-share code ranges."""
+    if code.startswith(("920", "43", "8")):
         return "bj"
+    if code.startswith("6"):
+        return "sh"
     return "sz"
 
 
@@ -58,7 +57,7 @@ def normalize_ticker(value: str) -> str:
     plain code literal — this is the canonical form all services serialize and
     cache. Strips whitespace, uppercases, removes ``.SH``/``.SZ``/``.BJ``
     suffixes and ``SH``/``SZ``/``BJ`` prefixes, then validates against
-    ``^[0368]\\d{5}$`` (SH/BJ/SZ including Beijing Exchange ``8xxxxx``).
+    ``^[034689]\\d{5}$`` (SH/BJ/SZ including Beijing ``43/8/920`` ranges).
 
     Raises:
         InvalidTickerError: for empty input, path-like input, or any value that

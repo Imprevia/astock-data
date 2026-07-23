@@ -11,12 +11,27 @@ from pathlib import Path
 import pytest
 import requests
 
-from astock_data.clients.sina import SinaClient
+from astock_data.clients.sina import SinaClient, _shsz_prefix
 from astock_data.errors import DataSourceError, RateLimitError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("688017", "sh"),
+        ("900001", "sh"),
+        ("000001", "sz"),
+        ("920267", "bj"),
+        ("430047", "bj"),
+        ("835185", "bj"),
+    ],
+)
+def test_market_prefix_mapping(code: str, expected: str) -> None:
+    assert _shsz_prefix(code) == expected
 
 
 def _kline_payload() -> str:

@@ -96,6 +96,7 @@ class EastmoneyClient:
         *,
         min_interval: float | None = None,
         timeout: float | None = None,
+        max_retries: int = _MAX_RETRIES,
         session: requests.Session | None = None,
     ) -> None:
         cfg = settings if settings is not None else get_settings()
@@ -104,6 +105,7 @@ class EastmoneyClient:
             min_interval if min_interval is not None else cfg.eastmoney_min_interval
         )
         self.timeout: float = timeout if timeout is not None else cfg.request_timeout
+        self.max_retries = max_retries
         self.default_headers: dict[str, str] = {"User-Agent": pick_user_agent(cfg)}
         self._session: requests.Session = session or requests.Session()
         apply_proxy(self._session, cfg)
@@ -139,7 +141,7 @@ class EastmoneyClient:
         with self._lock:
             last_exc: requests.RequestException | None = None
             rate_limited_retry = False
-            for attempt in range(1 + _MAX_RETRIES):
+            for attempt in range(1 + self.max_retries):
                 if attempt == 0:
                     wait = self.min_interval - (time.time() - self._last_call)
                     if wait > 0:
@@ -161,7 +163,7 @@ class EastmoneyClient:
                     self._last_call = time.time()
                     status = response.status_code
                     if status in (429, 503):
-                        if attempt >= _MAX_RETRIES:
+                        if attempt >= self.max_retries:
                             raise RateLimitError(
                                 f"Eastmoney rate-limited ({status}) at {url!r}"
                             )
@@ -177,7 +179,7 @@ class EastmoneyClient:
                 except requests.RequestException as exc:
                     self._last_call = time.time()
                     last_exc = exc
-                    if not _is_retryable_transport_error(exc) or attempt >= _MAX_RETRIES:
+                    if not _is_retryable_transport_error(exc) or attempt >= self.max_retries:
                         attempts = attempt + 1
                         raise DataSourceError(
                             f"Eastmoney request failed after {attempts} attempts: {url!r}: "

@@ -21,6 +21,9 @@ resolver = pytest.importorskip(
         ("688017.SH", "688017"),
         ("sz000001", "000001"),
         ("BJ835185", "835185"),
+        ("920267", "920267"),
+        ("920267.BJ", "920267"),
+        ("BJ920267", "920267"),
     ],
 )
 def test_normalize_ticker_accepts_common_a_share_forms(raw, expected_code):
@@ -42,6 +45,22 @@ def test_resolve_ticker_accepts_code_with_injected_name_map():
     result = resolver.resolve_ticker("688017", name_map=fake_name_map)
 
     assert result == Ticker(code="688017", market="sh")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("code", "market"),
+    [
+        ("920267", "bj"),
+        ("430047", "bj"),
+        ("688017", "sh"),
+        ("000001", "sz"),
+    ],
+)
+def test_resolve_ticker_derives_market_from_supported_code(code, market):
+    result = resolver.resolve_ticker(code)
+
+    assert result == Ticker(code=code, market=market)
 
 
 @pytest.mark.unit

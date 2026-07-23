@@ -59,7 +59,9 @@ _INDEX_SYMBOLS: tuple[tuple[str, str], ...] = (
 
 
 def _shsz_prefix(code: str) -> str:
-    """Map a 6-digit code to ``sh``/``sz`` for Sina endpoints."""
+    """Map a 6-digit code to the corresponding Sina market prefix."""
+    if code.startswith(("920", "43", "8")):
+        return "bj"
     if code.startswith(("6", "9")):
         return "sh"
     return "sz"
@@ -96,6 +98,10 @@ class SinaClient:
 
     KLINE_URL = (
         "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "CN_MarketData.getKLineData"
+    )
+    INDEX_KLINE_URL = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
         "CN_MarketData.getKLineData"
     )
     FINANCE_URL = (
@@ -184,6 +190,36 @@ class SinaClient:
                 }
             )
         return rows
+
+    def index_kline(self, symbol: str, datalen: int = 10) -> list[dict]:
+        """Fetch index daily K-line bars with Sina ``volume`` as amount yuan."""
+        data = self._get_json(
+            self.INDEX_KLINE_URL,
+            params={
+                "symbol": symbol,
+                "scale": "240",
+                "ma": "no",
+                "datalen": str(datalen),
+            },
+        )
+        if not isinstance(data, list):
+            return []
+
+        rows: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                {
+                    "date": str(item.get("day", "")),
+                    "open": _to_float(item.get("open")),
+                    "high": _to_float(item.get("high")),
+                    "low": _to_float(item.get("low")),
+                    "close": _to_float(item.get("close")),
+                    "volume": _to_float(item.get("volume")),
+                }
+            )
+        return sorted(rows, key=lambda row: row["date"])
 
     # ------------------------------------------------------------------
     # Quote snapshots and market rows (market breadth fallback)

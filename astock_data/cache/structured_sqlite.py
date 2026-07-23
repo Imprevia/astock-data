@@ -18,7 +18,7 @@ from typing import Any
 
 from astock_data.errors import InvalidTickerError
 
-_TICKER_RE = re.compile(r"^[0368]\d{5}$")
+_TICKER_RE = re.compile(r"^[034689]\d{5}$")
 _TRADE_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 _DB_FILENAME = "structured.sqlite"

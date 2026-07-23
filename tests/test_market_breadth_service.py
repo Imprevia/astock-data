@@ -208,6 +208,47 @@ def test_board_ladder_derives_three_boards_and_breaks_chain() -> None:
     assert any("derived" in warning for warning in result.warnings)
 
 
+@pytest.mark.parametrize("code", ["920267", "430047"])
+def test_board_ladder_derives_beijing_exchange_codes(code: str) -> None:
+    rows = [{"f12": code, "f14": "北证样本", "f2": 16.9, "f3": 30.0}]
+    requested: list[str] = []
+
+    def stock_data_func(symbol: str, start: str, end: str) -> StockDataResult:
+        requested.append(symbol)
+        return StockDataResult(
+            source="mock",
+            retrieved_at=dt.datetime(2026, 6, 17, tzinfo=dt.UTC),
+            ticker=Ticker(code=symbol, market="bj"),
+            bars=[
+                OHLCVBar(
+                    date="2026-06-16",
+                    open=13.0,
+                    high=13.0,
+                    low=13.0,
+                    close=13.0,
+                    volume=1000,
+                ),
+                OHLCVBar(
+                    date="2026-06-17",
+                    open=16.9,
+                    high=16.9,
+                    low=16.9,
+                    close=16.9,
+                    volume=1000,
+                )
+            ],
+        )
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FakeEastmoney(rows),
+        stock_data_func=stock_data_func,
+    )
+
+    assert requested == [code]
+    assert result.board_ladders[1][0].code == code
+
+
 def test_non_limit_day_breaks_board_chain() -> None:
     rows = [{"f12": "688017", "f14": "绿的谐波", "f2": 14.52, "f3": 20.0}]
     eastmoney = FakeEastmoney(rows)

@@ -27,10 +27,10 @@ __all__ = ["TdxClient"]
 
 # 6-digit A-share ticker regex.
 # Covers 0xxxxx (SZ main), 3xxxxx (SZ ChiNext/创业板), 6xxxxx (SH main/STAR),
-# AND 8xxxxx / 920xxx (Beijing Exchange / 北交所).
+# AND 43xxxx / 8xxxxx / 920xxx (Beijing Exchange / 北交所).
 # NOTE: the upstream source project wrongly used ``^[036]\d{5}$`` which silently
 # dropped every Beijing Exchange code; this is the fix.
-_CODE_RE = re.compile(r"^[0368]\d{5}$")
+_CODE_RE = re.compile(r"^[034689]\d{5}$")
 _PERIOD_CATEGORY = {
     "day": 4,
     "week": 5,
@@ -71,7 +71,7 @@ class TdxClient:
 
     All public methods return plain ``dict`` / ``list[dict]`` payloads (the
     service layer maps them to Pydantic models). Raw upstream payloads are kept
-    accessible (``_raw`` / ``raw``) where useful.
+        accessible (``_raw`` / ``raw``) where useful.
     """
 
     def __init__(self, client: Any | None = None) -> None:
@@ -113,9 +113,9 @@ class TdxClient:
         """Return the combined SZ (market=0) + SH (market=1) stock list.
 
         Each entry is ``{"code": str, "name": str}`` with whitespace stripped
-        from both fields. Only codes matching ``^[0368]\\d{5}$`` are kept, which
-        (importantly) includes Beijing Exchange ``8xxxxx`` codes that mootdx
-        bundles into the SZ/SH stock lists.
+        from both fields. Only codes matching ``^[034689]\\d{5}$`` are kept,
+        including Beijing Exchange ``43xxxx``, ``8xxxxx`` and ``920xxx`` codes
+        that mootdx bundles into the SZ/SH stock lists.
         """
         client = self._get_client()
         out: list[dict] = []

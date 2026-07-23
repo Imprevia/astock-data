@@ -71,7 +71,8 @@ def test_nineteen_subcommands_registered():
     from typer.main import get_command
 
     cmds = get_command(app).commands
-    assert len(cmds) == 19
+    # 19 core commands + 6 daily-review commands = 25 total.
+    assert len(cmds) == 25
 
 
 def test_default_format_is_json():

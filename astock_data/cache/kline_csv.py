@@ -19,8 +19,8 @@ from astock_data.errors import InvalidTickerError
 if TYPE_CHECKING:
     from astock_data.models.market import OHLCVBar
 
-# A-share 6-digit instrument codes: Shanghai (6), Shenzhen (0/3), Beijing (8).
-_TICKER_RE = re.compile(r"^[0368]\d{5}$")
+# A-share 6-digit instrument codes: Shanghai (6), Shenzhen (0/3), Beijing (4/8/9).
+_TICKER_RE = re.compile(r"^[034689]\d{5}$")
 _PERIOD_RE = re.compile(r"^(day|week|month|1min|5min|15min|30min|60min)$")
 
 _HEADER = ["date", "open", "high", "low", "close", "volume"]

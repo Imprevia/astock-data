@@ -33,6 +33,7 @@ class FakeMootdx:
                 [
                     {"code": "000001", "name": " 平安银行 "},  # whitespace
                     {"code": "835185", "name": "　长虹能源"},  # Beijing + full-width
+                    {"code": "920267", "name": "新赣江"},
                     {"code": "300001", "name": "特锐德"},
                     {"code": "2abcdef", "name": "should-be-filtered"},  # bad code
                     {"code": "9", "name": "too-short"},
@@ -161,6 +162,8 @@ def test_build_name_map_includes_beijing_and_filters_invalid():
     # THE bug fix: Beijing Exchange 8xxxxx must be present.
     assert "835185" in code_to_name
     assert "835185" in name_to_code.values()
+    assert "920267" in code_to_name
+    assert "920267" in name_to_code.values()
     # Invalid / unsupported codes filtered out.
     assert "510300" not in code_to_name
     assert "2abcdef" not in code_to_name

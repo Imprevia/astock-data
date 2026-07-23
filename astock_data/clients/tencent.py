@@ -31,16 +31,15 @@ _INDEX_CODES: tuple[tuple[str, str], ...] = (
 def _market_prefix(code: str) -> str:
     """Map a 6-digit A-share code to its Tencent market prefix.
 
-    Rules: leading ``6``/``9`` -> ``sh`` (Shanghai), leading ``8`` -> ``bj``
-    (Beijing Exchange), everything else -> ``sz`` (Shenzhen).
+    Rules: ``920``/``43``/``8`` -> ``bj`` (Beijing Exchange), other leading
+    ``6``/``9`` -> ``sh`` (Shanghai), everything else -> ``sz`` (Shenzhen).
     """
     if not code:
         return "sz"
-    head = code[0]
-    if head in ("6", "9"):
-        return "sh"
-    if head == "8":
+    if code.startswith(("920", "43", "8")):
         return "bj"
+    if code.startswith(("6", "9")):
+        return "sh"
     return "sz"
 
 
@@ -73,6 +72,8 @@ _FIELD_INDEXES = {
     "change_pct": 32,
     "high": 33,
     "low": 34,
+    "volume": 36,
+    "amount_wan": 37,
     "turnover_pct": 38,
     "pe_ttm": 39,
     "mcap_yi": 44,
@@ -89,6 +90,8 @@ _NUMERIC_FIELDS = {
     "change_pct",
     "high",
     "low",
+    "volume",
+    "amount_wan",
     "turnover_pct",
     "pe_ttm",
     "mcap_yi",
@@ -143,8 +146,9 @@ class TencentClient:
         """Fetch and parse batch real-time quotes for ``codes``.
 
         Returns a mapping ``{code: {name, price, last_close, open, change_pct,
-        high, low, turnover_pct, pe_ttm, mcap_yi, float_mcap_yi, pb, limit_up,
-        limit_down, pe_static}}``.
+        high, low, volume, amount_wan, turnover_pct, pe_ttm, mcap_yi,
+        float_mcap_yi, pb, limit_up, limit_down, pe_static}}``. ``volume`` is
+        measured in lots and ``amount_wan`` in ten-thousand yuan.
         """
         if not codes:
             return {}
