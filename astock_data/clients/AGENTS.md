@@ -2,14 +2,16 @@
 `astock_data/clients` 放各数据源客户端，只做网络抓取、解析和轻量规范化。
 
 ## 关键文件
-- `eastmoney.py`，东财唯一 chokepoint，所有 `eastmoney.com` URL 只能放这里。
-- `tencent.py`，腾讯实时行情客户端。
-- `sina.py`，新浪行情、财报、新闻客户端。
+- `_http.py`，共享反爬基础设施：随机 UA 池（`pick_user_agent`）、按 vendor 进程级 throttle（`throttled_get`）、连接级及 429/503 重试、vendor 白名单 headers builder（`build_headers`）和可选代理（`apply_proxy`）。
+- `eastmoney.py`，东财唯一 chokepoint，所有 `eastmoney.com` URL 只能放这里；UA 从随机池选取（`pick_user_agent`），429/503 纳入重试（读取 `Retry-After`、指数退避，耗尽抛 `RateLimitError`）。
+- `tencent.py`，腾讯实时行情客户端；UA 从随机池选取，带 `Referer: gu.qq.com`，接入共享 throttle/retry。
+- `sina.py`，新浪行情、财报、新闻客户端；`_get_json`/`market_page` 带 `Referer: finance.sina.com.cn`，接入共享 throttle/retry，429/503 抛 `RateLimitError`。
 - `tdx.py`，mootdx 包装客户端。
 - `__init__.py`，客户端导出集合。
 
 ## 允许修改
 - 客户端解析、超时、错误映射、会话注入、请求节流相关实现。
+- 反爬基础设施（`_http.py`）的 throttle/retry/UA 选择相关实现。
 - 仅在对应 vendor 文件内扩展该 vendor 的 URL 与解析逻辑。
 
 ## 禁止修改

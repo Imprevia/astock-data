@@ -71,6 +71,7 @@ def test_twenty_five_subcommands_registered():
     from typer.main import get_command
 
     cmds = get_command(app).commands
+    # 19 core commands + 6 daily-review commands = 25 total.
     assert len(cmds) == 25
 
 

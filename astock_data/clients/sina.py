@@ -13,7 +13,9 @@ from typing import Optional
 
 import requests
 
-from ..errors import DataSourceError
+from ..config import AStockSettings, get_settings
+from ..errors import DataSourceError, RateLimitError
+from ._http import apply_proxy, build_headers, pick_user_agent, throttled_get
 
 __all__ = ["SinaClient"]
 
@@ -57,7 +59,9 @@ _INDEX_SYMBOLS: tuple[tuple[str, str], ...] = (
 
 
 def _shsz_prefix(code: str) -> str:
-    """Map a 6-digit code to ``sh``/``sz`` for Sina endpoints."""
+    """Map a 6-digit code to the corresponding Sina market prefix."""
+    if code.startswith(("920", "43", "8")):
+        return "bj"
     if code.startswith(("6", "9")):
         return "sh"
     return "sz"
@@ -96,6 +100,10 @@ class SinaClient:
         "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
         "CN_MarketData.getKLineData"
     )
+    INDEX_KLINE_URL = (
+        "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+        "CN_MarketData.getKLineData"
+    )
     FINANCE_URL = (
         "https://quotes.sina.cn/cn/api/openapi.php/"
         "CompanyFinanceService.getFinanceReport2022"
@@ -113,15 +121,21 @@ class SinaClient:
     def __init__(
         self,
         session: Optional[requests.Session] = None,
-        timeout: float = 15.0,
+        timeout: Optional[float] = None,
+        settings: Optional[AStockSettings] = None,
     ) -> None:
+        self._settings = settings if settings is not None else get_settings()
+        self._ua = pick_user_agent(self._settings)
         self._session = session
-        self._timeout = timeout
+        self._timeout = (
+            timeout if timeout is not None else self._settings.request_timeout
+        )
 
     @property
     def session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            apply_proxy(self._session, self._settings)
         return self._session
 
     # ------------------------------------------------------------------
@@ -177,6 +191,36 @@ class SinaClient:
             )
         return rows
 
+    def index_kline(self, symbol: str, datalen: int = 10) -> list[dict]:
+        """Fetch index daily K-line bars with Sina ``volume`` as amount yuan."""
+        data = self._get_json(
+            self.INDEX_KLINE_URL,
+            params={
+                "symbol": symbol,
+                "scale": "240",
+                "ma": "no",
+                "datalen": str(datalen),
+            },
+        )
+        if not isinstance(data, list):
+            return []
+
+        rows: list[dict] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            rows.append(
+                {
+                    "date": str(item.get("day", "")),
+                    "open": _to_float(item.get("open")),
+                    "high": _to_float(item.get("high")),
+                    "low": _to_float(item.get("low")),
+                    "close": _to_float(item.get("close")),
+                    "volume": _to_float(item.get("volume")),
+                }
+            )
+        return sorted(rows, key=lambda row: row["date"])
+
     # ------------------------------------------------------------------
     # Quote snapshots and market rows (market breadth fallback)
     # ------------------------------------------------------------------
@@ -187,7 +231,7 @@ class SinaClient:
         try:
             resp = self.session.get(
                 self.QUOTE_URL + ",".join(symbol for _, symbol in _INDEX_SYMBOLS),
-                headers={"User-Agent": _USER_AGENT, "Referer": "https://finance.sina.com.cn/"},
+                headers={"User-Agent": self._ua, "Referer": "https://finance.sina.com.cn/"},
                 timeout=self._timeout,
             )
             resp.raise_for_status()
@@ -348,7 +392,7 @@ class SinaClient:
                 url,
                 params=params,
                 headers={
-                    "User-Agent": _USER_AGENT,
+                    "User-Agent": self._ua,
                     "Referer": "https://finance.sina.com.cn/",
                 },
                 timeout=self._timeout,
@@ -390,14 +434,20 @@ class SinaClient:
         Raises :class:`DataSourceError` on HTTP or JSON failures.
         """
         try:
-            resp = self.session.get(
-                url,
-                params=params,
-                headers={"User-Agent": _USER_AGENT},
+            resp = throttled_get(
+                vendor="sina",
+                session=self.session,
+                url=url,
+                min_interval=0.5,
                 timeout=self._timeout,
+                params=params,
+                headers=build_headers("sina", user_agent=self._ua),
             )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
+        except RateLimitError as exc:
+            raise RateLimitError(
+                f"Sina request failed for {url}: {exc}"
+            ) from exc
+        except DataSourceError as exc:
             raise DataSourceError(
                 f"Sina request failed for {url}: {exc}"
             ) from exc

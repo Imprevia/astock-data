@@ -561,6 +561,21 @@ def sector_strength(
     _run(lambda: api.get_sector_strength(curr_date or ""))
 
 
+# ---------------------------------------------------------------------------
+# Daily-review commands (registered from the dedicated module).
+# ---------------------------------------------------------------------------
+# The daily-review commands (index-kline, stock-amount, sector-fund-flow,
+# sector-strength, sector-fund-flow-history, etf-daily) are defined in the
+# ``cli_daily_review`` module to keep this file focused on the core 19
+# commands.  Register them here so ``astock-data <subcommand>`` works.
+try:
+    from .cli_daily_review import register_daily_review_commands
+
+    register_daily_review_commands(app)
+except Exception:  # noqa: BLE001 - registration is best-effort, never block CLI
+    pass
+
+
 def main() -> None:
     """Console-script entry point (``astock-data``)."""
 

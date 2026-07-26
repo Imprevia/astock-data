@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from astock_data.config import AStockSettings, get_settings
 from astock_data.errors import (
     AStockDataError,
@@ -18,6 +21,8 @@ def test_defaults_load_without_env_vars(monkeypatch):
     monkeypatch.delenv("ASTOCK_EASTMONEY_MIN_INTERVAL", raising=False)
     monkeypatch.delenv("ASTOCK_CACHE_DIR", raising=False)
     monkeypatch.delenv("ASTOCK_LIVE_TESTS", raising=False)
+    monkeypatch.delenv("ASTOCK_HTTP_PROXY", raising=False)
+    monkeypatch.delenv("ASTOCK_USER_AGENT_POOL", raising=False)
     get_settings.cache_clear()
 
     settings = get_settings()
@@ -30,6 +35,34 @@ def test_defaults_load_without_env_vars(monkeypatch):
     assert settings.enable_live_tests is False
     assert settings.name_map_ttl_hours == 24.0
     assert settings.user_agent
+    assert settings.http_proxy is None
+    assert settings.user_agent_pool is None
+
+
+def test_http_proxy_env_override(monkeypatch):
+    monkeypatch.setenv("ASTOCK_HTTP_PROXY", "http://127.0.0.1:8080")
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.http_proxy == "http://127.0.0.1:8080"
+
+
+def test_user_agent_pool_env_override(monkeypatch):
+    monkeypatch.setenv("ASTOCK_USER_AGENT_POOL", '["UA-X"]')
+    get_settings.cache_clear()
+
+    settings = get_settings()
+
+    assert settings.user_agent_pool == ["UA-X"]
+
+
+def test_user_agent_pool_rejects_invalid_json(monkeypatch):
+    monkeypatch.setenv("ASTOCK_USER_AGENT_POOL", "not-json")
+    get_settings.cache_clear()
+
+    with pytest.raises(ValidationError):
+        get_settings()
 
 
 def test_env_overrides_eastmoney_min_interval(monkeypatch):

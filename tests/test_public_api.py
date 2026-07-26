@@ -12,6 +12,8 @@ no live HTTP, no mootdx TCP.
 
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 import astock_data
@@ -208,6 +210,11 @@ from astock_data.models.market import IndexKlineResult, StockAmountResult  # noq
 from astock_data.clients import eastmoney as _em  # noqa: E402
 
 
+class _EmptyIndexSina:
+    def index_kline(self, symbol, datalen=10):
+        return []
+
+
 def test_index_kline_normal(monkeypatch):
     klines = [{"date": "2026-06-30", "open": 4058.0, "high": 4097.0, "low": 4052.0, "close": 4094.0, "volume": 5.98e8, "amount": 1.53e12}]
     monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
@@ -227,6 +234,7 @@ def test_index_kline_empty(monkeypatch):
         def index_bars(self, key, days=10):
             return []
 
+    monkeypatch.setattr(_md, "SinaClient", lambda: _EmptyIndexSina())
     monkeypatch.setattr(_md, "TdxClient", lambda: _EmptyTdx())
     from astock_data.api import get_index_kline
     result = get_index_kline("sh", 5)
@@ -252,6 +260,7 @@ def test_index_kline_falls_back_to_tdx(monkeypatch):
                 }
             ]
 
+    monkeypatch.setattr(_md, "SinaClient", lambda: _EmptyIndexSina())
     monkeypatch.setattr(_md, "TdxClient", lambda: _FallbackTdx())
     from astock_data.api import get_index_kline
 
@@ -272,6 +281,7 @@ def test_index_kline_api_error(monkeypatch):
         def index_bars(self, key, days=10):
             raise RuntimeError("tdx down")
 
+    monkeypatch.setattr(_md, "SinaClient", lambda: _EmptyIndexSina())
     monkeypatch.setattr(_md, "TdxClient", lambda: _FailingTdx())
     from astock_data.api import get_index_kline
     result = get_index_kline("sh", 5)
@@ -284,10 +294,70 @@ def test_index_kline_api_error(monkeypatch):
 def test_stock_amount_normal(monkeypatch):
     klines = [{"date": f"2026-06-{30 - i}", "amount": 1.1e9} for i in range(5)]
     monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
+    from astock_data.services import market_data as _md
+    monkeypatch.setattr(
+        _md,
+        "TencentClient",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("Tencent must not be called")),
+        raising=False,
+    )
     from astock_data.api import get_stock_amount
     result = get_stock_amount("000001", 5)
     assert isinstance(result, StockAmountResult)
     assert len(result.bars) == 5
+
+
+def test_stock_amount_falls_back_to_tencent_when_eastmoney_fails(monkeypatch):
+    def _eastmoney_failure(secid, days=10, **kw):
+        raise RuntimeError("push2his blocked")
+
+    class _TencentQuote:
+        def __init__(self, **_kwargs):
+            pass
+
+        def quote(self, codes):
+            assert codes == ["600584"]
+            return {"600584": {"amount_wan": 2245466.0}}
+
+    monkeypatch.setattr(_em, "fetch_kline", _eastmoney_failure)
+    from astock_data.services import market_data as _md
+    monkeypatch.setattr(_md, "TencentClient", _TencentQuote, raising=False)
+    monkeypatch.setattr(
+        _md,
+        "_now_utc",
+        lambda: dt.datetime(2026, 7, 22, 8, tzinfo=dt.UTC),
+    )
+    from astock_data.api import get_stock_amount
+
+    result = get_stock_amount("600584", 5)
+
+    assert len(result.bars) == 1
+    assert result.bars[0].date == "2026-07-22"
+    assert result.bars[0].amount == pytest.approx(22454660000.0)
+    assert "used Tencent quote for stock amount (push2his blocked)" in result.warnings
+
+
+def test_stock_amount_returns_empty_when_eastmoney_and_tencent_fail(monkeypatch):
+    def _eastmoney_failure(secid, days=10, **kw):
+        raise RuntimeError("push2his blocked")
+
+    class _FailingTencentQuote:
+        def __init__(self, **_kwargs):
+            pass
+
+        def quote(self, codes):
+            raise RuntimeError("Tencent unavailable")
+
+    monkeypatch.setattr(_em, "fetch_kline", _eastmoney_failure)
+    from astock_data.services import market_data as _md
+    monkeypatch.setattr(_md, "TencentClient", _FailingTencentQuote, raising=False)
+    from astock_data.api import get_stock_amount
+
+    result = get_stock_amount("000001", 5)
+
+    assert result.bars == []
+    assert any("push2his blocked" in warning for warning in result.warnings)
+    assert any("Tencent unavailable" in warning for warning in result.warnings)
 
 
 def test_kline_funcs_in_all():

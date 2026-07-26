@@ -5,12 +5,17 @@ from typing import Any
 
 import pytest
 
+from astock_data.cache import SQLiteStructuredCache
+from astock_data.clients import eastmoney as eastmoney_module
+from astock_data.config import AStockSettings
+from astock_data.services import signals_b
 from astock_data.services.signals_b import (
     get_concept_blocks,
     get_dragon_tiger_board,
     get_fund_flow,
     get_industry_comparison,
     get_lockup_expiry,
+    get_sector_fund_flow_history,
 )
 
 pytestmark = pytest.mark.unit
@@ -186,3 +191,76 @@ def test_industry_comparison_rows_do_not_overclaim_target_industry() -> None:
     assert result.rows[0].raw["leader"] == "样本股A"
     assert fake.calls[0][0] == "push2"
     assert fake.calls[0][1][1]["fs"] == "m:90+t:2"
+
+
+def test_sector_history_prefers_dataapi_over_push2his(monkeypatch, tmp_path) -> None:
+    """dataapi 命中时不应调用 push2his。"""
+    dataapi_data = {
+        "BK1036": [{"date": "2026-07-21", "main_net_inflow": 5e10}],
+        "BK1201": [{"date": "2026-07-21", "main_net_inflow": -2e10}],
+    }
+    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: dataapi_data, raising=False)
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: pytest.fail("push2his should not be called when dataapi hits"), raising=False)
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: pytest.fail("THS should not be called"), raising=False)
+
+    result = get_sector_fund_flow_history(["BK1036", "BK1201"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+
+    assert result.history_by_code == dataapi_data
+    assert any("dataapi" in w for w in result.warnings)
+
+
+def test_sector_history_falls_back_to_push2his_when_dataapi_misses(monkeypatch, tmp_path) -> None:
+    """dataapi 未覆盖的行业走 push2his。"""
+    push2his_data = [{"date": "2026-07-21", "main_net_inflow": 1e8}]
+    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: push2his_data)
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: pytest.fail("THS should not be called"), raising=False)
+
+    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+
+    assert result.history_by_code["BK1036"] == push2his_data
+
+
+def test_sector_history_uses_ths_when_dataapi_and_push2his_fail(monkeypatch, tmp_path) -> None:
+    fallback = [{"date": "2026-07-21", "main_net_inflow": 5e10, "close": 16444.838, "amount": 517976460000.0, "pct_change": 9.83}]
+    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: fallback, raising=False)
+
+    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+
+    assert result.history_by_code["BK1036"] == fallback
+    assert any("THS" in warning for warning in result.warnings)
+
+
+def test_sector_history_uses_cache_when_all_sources_fail(monkeypatch, tmp_path) -> None:
+    settings = AStockSettings(cache_dir=tmp_path)
+    cached = [{"date": "2026-07-20", "main_net_inflow": 2e8}]
+    SQLiteStructuredCache(tmp_path).write_general("sector_history", "BK1036:2026-07-21-15", "2026-07-21", {"values": cached})
+    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("down")), raising=False)
+
+    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=settings)
+
+    assert result.history_by_code["BK1036"] == cached
+
+
+def test_sector_history_is_empty_when_all_sources_and_cache_fail(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: [], raising=False)
+
+    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+
+    assert result.history_by_code["BK1036"] == []
+
+
+def test_ths_sector_history_parses_close_amount_and_change(monkeypatch) -> None:
+    text = 'callback({"data":"20260720,1,2,0.5,100,10,2000;20260721,1,2,0.5,110,20,3000"})'
+    response = type("Response", (), {"text": text})()
+    monkeypatch.setattr(signals_b, "_session_get", lambda *args, **kwargs: response, raising=False)
+
+    rows = signals_b._fetch_ths_industry_kline("881121", days=1, settings=AStockSettings())
+
+    assert rows == [{"date": "2026-07-21", "main_net_inflow": 300.0, "close": 110.0, "amount": 3000.0, "pct_change": 10.0}]

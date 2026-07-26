@@ -26,6 +26,7 @@ from typing import Any
 
 import requests
 
+from astock_data.clients._http import apply_proxy, pick_user_agent
 from astock_data.config import AStockSettings, get_settings
 from astock_data.errors import DataSourceError, RateLimitError
 
@@ -60,6 +61,7 @@ _PUSH2_DEFAULT_HEADERS: dict[str, str] = {
 }
 _MAX_RETRIES = 2
 _RETRY_DELAYS = [1.0, 2.0]
+_RATE_LIMIT_DELAYS = [2.0, 4.0]
 
 
 def _is_retryable_transport_error(exc: requests.RequestException) -> bool:
@@ -77,6 +79,14 @@ def _is_retryable_transport_error(exc: requests.RequestException) -> bool:
     return False
 
 
+def _retry_after_seconds(response: requests.Response, attempt: int) -> float:
+    value = response.headers.get("Retry-After")
+    try:
+        return max(0.0, float(int(value))) if value is not None else _RATE_LIMIT_DELAYS[attempt]
+    except ValueError:
+        return _RATE_LIMIT_DELAYS[attempt]
+
+
 class EastmoneyClient:
     """Rate-limited, thread-safe HTTP client for eastmoney.com endpoints."""
 
@@ -86,6 +96,7 @@ class EastmoneyClient:
         *,
         min_interval: float | None = None,
         timeout: float | None = None,
+        max_retries: int = _MAX_RETRIES,
         session: requests.Session | None = None,
     ) -> None:
         cfg = settings if settings is not None else get_settings()
@@ -94,8 +105,10 @@ class EastmoneyClient:
             min_interval if min_interval is not None else cfg.eastmoney_min_interval
         )
         self.timeout: float = timeout if timeout is not None else cfg.request_timeout
-        self.default_headers: dict[str, str] = {"User-Agent": cfg.user_agent}
+        self.max_retries = max_retries
+        self.default_headers: dict[str, str] = {"User-Agent": pick_user_agent(cfg)}
         self._session: requests.Session = session or requests.Session()
+        apply_proxy(self._session, cfg)
         # Ensure session always carries the default UA even when injected.
         self._session.headers.update(self.default_headers)
         # Single lock serializes sleep+call+timestamp-update across threads.
@@ -127,11 +140,14 @@ class EastmoneyClient:
         # race is exactly the flaw being fixed from the source ``_em_get``.
         with self._lock:
             last_exc: requests.RequestException | None = None
-            for attempt in range(1 + _MAX_RETRIES):
+            rate_limited_retry = False
+            for attempt in range(1 + self.max_retries):
                 if attempt == 0:
                     wait = self.min_interval - (time.time() - self._last_call)
                     if wait > 0:
                         time.sleep(wait + random.uniform(0.1, 0.5))
+                elif rate_limited_retry:
+                    rate_limited_retry = False
                 else:
                     delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
                     time.sleep(delay)
@@ -145,11 +161,25 @@ class EastmoneyClient:
                         **kwargs,
                     )
                     self._last_call = time.time()
-                    break
+                    status = response.status_code
+                    if status in (429, 503):
+                        if attempt >= self.max_retries:
+                            raise RateLimitError(
+                                f"Eastmoney rate-limited ({status}) at {url!r}"
+                            )
+                        delay = _retry_after_seconds(
+                            response,
+                            min(attempt, len(_RATE_LIMIT_DELAYS) - 1),
+                        )
+                        time.sleep(delay)
+                        rate_limited_retry = True
+                        continue
+                    self._raise_for_status(response, url)
+                    return response
                 except requests.RequestException as exc:
                     self._last_call = time.time()
                     last_exc = exc
-                    if not _is_retryable_transport_error(exc) or attempt >= _MAX_RETRIES:
+                    if not _is_retryable_transport_error(exc) or attempt >= self.max_retries:
                         attempts = attempt + 1
                         raise DataSourceError(
                             f"Eastmoney request failed after {attempts} attempts: {url!r}: "
@@ -161,8 +191,7 @@ class EastmoneyClient:
                         f"Eastmoney request failed: {url!r}: {last_exc}"
                     ) from last_exc
 
-        self._raise_for_status(response, url)
-        return response
+        raise DataSourceError(f"Eastmoney request failed at {url!r}")
 
     @staticmethod
     def _raise_for_status(response: requests.Response, url: str) -> None:

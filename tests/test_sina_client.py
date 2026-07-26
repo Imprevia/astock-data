@@ -11,12 +11,27 @@ from pathlib import Path
 import pytest
 import requests
 
-from astock_data.clients.sina import SinaClient
-from astock_data.errors import DataSourceError
+from astock_data.clients.sina import SinaClient, _shsz_prefix
+from astock_data.errors import DataSourceError, RateLimitError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("688017", "sh"),
+        ("900001", "sh"),
+        ("000001", "sz"),
+        ("920267", "bj"),
+        ("430047", "bj"),
+        ("835185", "bj"),
+    ],
+)
+def test_market_prefix_mapping(code: str, expected: str) -> None:
+    assert _shsz_prefix(code) == expected
 
 
 def _kline_payload() -> str:
@@ -112,6 +127,38 @@ def test_kline_json_error_raises(requests_mocker) -> None:
     requests_mocker.get(SinaClient.KLINE_URL, text="not json")
     with pytest.raises(DataSourceError):
         SinaClient().kline("688017")
+
+
+def test_kline_request_includes_finance_referer(requests_mocker) -> None:
+    requests_mocker.get(SinaClient.KLINE_URL, text=_kline_payload())
+
+    SinaClient().kline("688017")
+
+    assert requests_mocker.request_history[-1].headers["Referer"] == (
+        "https://finance.sina.com.cn/"
+    )
+
+
+def test_kline_retries_rate_limit_then_raises(monkeypatch) -> None:
+    class RateLimitedSession:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get(self, url, **kwargs):
+            self.calls += 1
+            response = requests.Response()
+            response.status_code = 429
+            response.url = url
+            response.headers["Retry-After"] = "0"
+            return response
+
+    monkeypatch.setattr("astock_data.clients._http.time.sleep", lambda _: None)
+    session = RateLimitedSession()
+
+    with pytest.raises(RateLimitError):
+        SinaClient(session=session).kline("688017")
+
+    assert session.calls == 3
 
 
 def test_index_snapshots_parse_short_quote_payload(requests_mocker) -> None:

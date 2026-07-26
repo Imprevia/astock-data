@@ -51,6 +51,14 @@ def test_csv_kline_cache_uses_safe_normalized_filename(tmp_path):
     assert files[0].resolve().is_relative_to(tmp_path.resolve())
 
 
+def test_csv_kline_cache_accepts_new_beijing_ticker(tmp_path):
+    cache = CsvKlineCache(base_dir=tmp_path)
+
+    path = cache.write("920267", [])
+
+    assert path.name == "920267.csv"
+
+
 def test_csv_kline_cache_rejects_path_traversal_key(tmp_path):
     cache = CsvKlineCache(base_dir=tmp_path)
 
@@ -98,6 +106,15 @@ def test_sqlite_structured_cache_roundtrips_payload(tmp_path):
     cache.write("fundamentals", "688017", "2026-06-16", payload)
 
     assert cache.read("fundamentals", "688017", "2026-06-16") == payload
+
+
+def test_sqlite_structured_cache_accepts_new_beijing_ticker(tmp_path):
+    cache = SQLiteStructuredCache(base_dir=tmp_path)
+    payload = {"market": "bj"}
+
+    cache.write("fundamentals", "920267", "2026-07-21", payload)
+
+    assert cache.read("fundamentals", "920267", "2026-07-21") == payload
 
 
 def test_sqlite_structured_cache_schema_columns_present(tmp_path):

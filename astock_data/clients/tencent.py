@@ -11,7 +11,9 @@ from typing import Optional
 
 import requests
 
-from ..errors import DataSourceError
+from ..config import AStockSettings, get_settings
+from ..errors import DataSourceError, RateLimitError
+from ._http import apply_proxy, build_headers, pick_user_agent, throttled_get
 
 __all__ = ["TencentClient"]
 
@@ -29,16 +31,15 @@ _INDEX_CODES: tuple[tuple[str, str], ...] = (
 def _market_prefix(code: str) -> str:
     """Map a 6-digit A-share code to its Tencent market prefix.
 
-    Rules: leading ``6``/``9`` -> ``sh`` (Shanghai), leading ``8`` -> ``bj``
-    (Beijing Exchange), everything else -> ``sz`` (Shenzhen).
+    Rules: ``920``/``43``/``8`` -> ``bj`` (Beijing Exchange), other leading
+    ``6``/``9`` -> ``sh`` (Shanghai), everything else -> ``sz`` (Shenzhen).
     """
     if not code:
         return "sz"
-    head = code[0]
-    if head in ("6", "9"):
-        return "sh"
-    if head == "8":
+    if code.startswith(("920", "43", "8")):
         return "bj"
+    if code.startswith(("6", "9")):
+        return "sh"
     return "sz"
 
 
@@ -71,6 +72,8 @@ _FIELD_INDEXES = {
     "change_pct": 32,
     "high": 33,
     "low": 34,
+    "volume": 36,
+    "amount_wan": 37,
     "turnover_pct": 38,
     "pe_ttm": 39,
     "mcap_yi": 44,
@@ -87,6 +90,8 @@ _NUMERIC_FIELDS = {
     "change_pct",
     "high",
     "low",
+    "volume",
+    "amount_wan",
     "turnover_pct",
     "pe_ttm",
     "mcap_yi",
@@ -108,31 +113,42 @@ class TencentClient:
         mocking). When ``None`` a fresh session is created on demand.
     timeout:
         Per-request timeout in seconds.
+    settings:
+        Optional runtime settings for timeout, user-agent pool, and proxy.
     """
 
     QUOTE_URL = "https://qt.gtimg.cn/q="
-    USER_AGENT = "Mozilla/5.0"
+    USER_AGENT = None
 
     def __init__(
         self,
         session: Optional[requests.Session] = None,
-        timeout: float = 10.0,
+        timeout: float | None = None,
+        settings: AStockSettings | None = None,
     ) -> None:
+        self._settings = settings if settings is not None else get_settings()
         self._session = session
-        self._timeout = timeout
+        self._ua = pick_user_agent(self._settings)
+        self._timeout = (
+            timeout if timeout is not None else self._settings.request_timeout
+        )
+        if self._session is not None:
+            apply_proxy(self._session, self._settings)
 
     @property
     def session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            apply_proxy(self._session, self._settings)
         return self._session
 
     def quote(self, codes: list[str]) -> dict[str, dict]:
         """Fetch and parse batch real-time quotes for ``codes``.
 
         Returns a mapping ``{code: {name, price, last_close, open, change_pct,
-        high, low, turnover_pct, pe_ttm, mcap_yi, float_mcap_yi, pb, limit_up,
-        limit_down, pe_static}}``.
+        high, low, volume, amount_wan, turnover_pct, pe_ttm, mcap_yi,
+        float_mcap_yi, pb, limit_up, limit_down, pe_static}}``. ``volume`` is
+        measured in lots and ``amount_wan`` in ten-thousand yuan.
         """
         if not codes:
             return {}
@@ -175,13 +191,17 @@ class TencentClient:
         url = self.QUOTE_URL + ",".join(prefixed)
 
         try:
-            resp = self.session.get(
-                url,
-                headers={"User-Agent": self.USER_AGENT},
+            resp = throttled_get(
+                vendor="tencent",
+                session=self.session,
+                url=url,
+                min_interval=0.5,
                 timeout=self._timeout,
+                headers=build_headers("tencent", user_agent=self._ua),
             )
-            resp.raise_for_status()
-        except requests.RequestException as exc:  # network / HTTP errors
+        except RateLimitError:
+            raise
+        except DataSourceError as exc:
             raise DataSourceError(
                 f"Tencent quote request failed: {exc}"
             ) from exc

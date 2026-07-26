@@ -3,12 +3,16 @@ from __future__ import annotations
 import datetime as dt
 import re
 import threading
+import json
+import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 from astock_data.cache import SQLiteStructuredCache
+import requests
+
 from astock_data.clients.eastmoney import (
     EastmoneyClient,
     PUSH2HIS_FFLOW_DAYKLINE_PATH,
@@ -37,6 +41,46 @@ from astock_data.models.signals import (
     SectorStrengthRow,
 )
 from astock_data.resolver import resolve_ticker
+from astock_data.services.signals_a import _USER_AGENT, _session_get
+
+
+_EM_TO_THS_SECTOR_MAP: Mapping[str, str] = {
+    # 东财细分行业 → 同花顺大行业（同花顺分类粒度较粗，一个THS行业覆盖多个EM细分）
+    # 半导体产业链 → 881121 半导体
+    "BK1036": "881121",  # 半导体
+    "BK1326": "881121",  # 半导体设备
+    "BK1331": "881121",  # 数字芯片设计
+    "BK1011": "881121",  # 集成电路封测
+    "BK1032": "881121",  # 集成电路制造
+    "BK1035": "881121",  # 半导体材料
+    "BK1332": "881121",  # 模拟芯片设计
+    "BK1012": "881121",  # 分立器件
+    # 电子/消费电子 → 881124 消费电子
+    "BK1201": "881124",  # 电子
+    "BK1037": "881124",  # 消费电子
+    "BK1338": "881124",  # 消费电子零部件及组装
+    "BK0459": "881124",  # 元件
+    "BK1038": "881122",  # 光学光电子
+    "BK1034": "881124",  # 被动元件
+    "BK0474": "881124",  # 印制电路板
+    "BK1722": "881172",  # 电子化学品Ⅲ
+    # 通信 → 881129 通信设备
+    "BK0448": "881129",  # 通信设备
+    "BK1591": "881129",  # 通信网络设备及器件
+    "BK1215": "881129",  # 通信
+    # 有色金属 → 881168 工业金属 / 881169 贵金属
+    "BK0478": "881168",  # 有色金属
+    "BK1287": "881168",  # 工业金属
+    "BK1141": "881168",  # 铜
+    "BK1109": "881169",  # 贵金属
+    "BK1074": "881169",  # 黄金
+    "BK0482": "881170",  # 小金属（含稀土）
+    # 电力 → 881145 电力
+    "BK1200": "881145",  # 电力设备
+}
+_THS_INDUSTRY_KLINE_URL = "http://d.10jqka.com.cn/v6/line/bk_{code}/01/last.js"
+_THS_JSONP_RE = re.compile(r"\((\{.*\})\)\s*;?\s*$", re.DOTALL)
+_DATAAPI_BKZJ_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
 
 
 def _now_utc() -> dt.datetime:
@@ -651,6 +695,141 @@ def _abs_or_zero(value: float | None) -> float:
     return abs(value) if value is not None else 0.0
 
 
+def _em_to_ths_code(code: str) -> str | None:
+    return _EM_TO_THS_SECTOR_MAP.get(code.upper())
+
+
+def _fetch_dataapi_sector_fund_flow(
+    codes: list[str],
+    days: int = 5,
+    settings: AStockSettings | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Fetch real cumulative sector fund flow from Eastmoney dataapi in one request."""
+    cfg = settings or get_settings()
+    headers = {
+        "User-Agent": getattr(cfg, "user_agent", _USER_AGENT),
+        "Referer": "https://data.eastmoney.com/bkzj/hy.html",
+    }
+    key = {1: "f62", 5: "f164", 10: "f165"}.get(days, "f164")
+
+    try:
+        with requests.Session() as session:
+            response = session.get(
+                _DATAAPI_BKZJ_URL,
+                params={"key": key, "code": "m:90+t:2"},
+                headers=headers,
+                timeout=float(getattr(cfg, "request_timeout", 15.0)),
+            )
+            response.raise_for_status()
+    except requests.RequestException:
+        return {}
+
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+    data = payload.get("data")
+    if not isinstance(data, Mapping):
+        return {}
+    diff = data.get("diff")
+    if not isinstance(diff, list):
+        return {}
+
+    inflow_by_code: dict[str, float] = {}
+    for item in diff:
+        if not isinstance(item, Mapping):
+            continue
+        bk_code = str(item.get("f12", "")).upper()
+        raw_value = item.get(key)
+        try:
+            inflow_by_code[bk_code] = float(raw_value) if raw_value is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+
+    target_date = _target_trade_date("")
+    result: dict[str, list[dict[str, Any]]] = {}
+    for code in codes:
+        upper_code = code.upper()
+        if upper_code in inflow_by_code:
+            result[code] = [
+                {
+                    "date": target_date,
+                    "main_net_inflow": inflow_by_code[upper_code],
+                }
+            ]
+    return result
+
+
+def _fetch_ths_industry_kline(
+    ths_code: str,
+    days: int = 5,
+    settings: AStockSettings | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch THS industry daily bars as a fund-flow-history fallback."""
+    cfg = settings or get_settings()
+    headers = {
+        "User-Agent": getattr(cfg, "user_agent", _USER_AGENT),
+        "Referer": "https://d.10jqka.com.cn/",
+    }
+    with requests.Session() as session:
+        response = _session_get(
+            session,
+            _THS_INDUSTRY_KLINE_URL.format(code=ths_code),
+            headers=headers,
+            timeout=float(getattr(cfg, "request_timeout", 15.0)),
+        )
+
+    match = _THS_JSONP_RE.search(str(response.text))
+    if match is None:
+        return []
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, Mapping):
+        return []
+    raw = payload.get("data")
+    if not isinstance(raw, str):
+        return []
+
+    result: list[dict[str, Any]] = []
+    previous_close: float | None = None
+    for line in raw.split(";"):
+        parts = line.split(",")
+        if len(parts) < 7 or len(parts[0]) != 8 or not parts[0].isdigit():
+            continue
+        try:
+            close = float(parts[4])
+            amount = float(parts[6])
+        except ValueError:
+            continue
+        date_raw = parts[0]
+        pct_change = (
+            round((close / previous_close - 1.0) * 100.0, 4)
+            if previous_close not in (None, 0.0)
+            else None
+        )
+        # 同花顺行业K线不含主力资金流；用 涨跌幅×成交额/100 作为资金流方向近似。
+        # 涨为正流入，跌为负流出，量级与主力资金流同维度（元），下游可正常汇总。
+        approx_inflow = (
+            pct_change * amount / 100.0
+            if pct_change is not None
+            else None
+        )
+        result.append(
+            {
+                "date": f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:8]}",
+                "main_net_inflow": approx_inflow,
+                "close": close,
+                "amount": amount,
+                "pct_change": pct_change,
+            }
+        )
+        previous_close = close
+    return result[-days:]
+
+
 def get_sector_fund_flow_history(
     codes: list[str],
     curr_date: str = "",
@@ -678,8 +857,24 @@ def get_sector_fund_flow_history(
 
     request_gate = threading.Lock()
     stop_event = threading.Event()
+    ths_fallback_codes: set[str] = set()
+    push2his_codes: set[str] = set()
+
+    # dataapi 优先：一次请求获取全部行业数据，命中后不再逐个调 push2his。
+    # push2his 被反爬封禁时 3 次重试耗时约 30 秒/行业，30 个行业串行等待就是 15 分钟。
+    # dataapi 走 data.eastmoney.com（数据中心），与被封的 push2his 是不同服务器。
+    try:
+        dataapi_data = _fetch_dataapi_sector_fund_flow(codes, days=days, settings=settings)
+    except Exception:  # noqa: BLE001 - dataapi failure degrades to push2his
+        dataapi_data = {}
+    dataapi_used = bool(dataapi_data)
+    codes_not_in_dataapi = [c for c in codes if c not in dataapi_data]
 
     def pull_one(code: str) -> tuple[str, list[dict[str, Any]]]:
+        # dataapi 已命中的直接返回
+        if code in dataapi_data:
+            return code, dataapi_data[code]
+
         secid = f"90.{code.lower()}"
         with request_gate:
             if stop_event.is_set():
@@ -687,6 +882,7 @@ def get_sector_fund_flow_history(
                 return code, cached or []
             try:
                 values = _em.fetch_sector_fund_flow_history(secid, days=days, client=client)
+                push2his_codes.add(code)
                 try:
                     cache.write_general(
                         "sector_history",
@@ -697,7 +893,20 @@ def get_sector_fund_flow_history(
                 except Exception:  # noqa: BLE001 - cache write failure is non-fatal
                     pass
                 return code, values
-            except Exception:  # noqa: BLE001 - trigger fallback for the rest
+            except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
+                ths_code = _em_to_ths_code(code)
+                if ths_code is not None:
+                    try:
+                        ths_values = _fetch_ths_industry_kline(
+                            ths_code,
+                            days=days,
+                            settings=settings,
+                        )
+                    except requests.RequestException:
+                        ths_values = []
+                    if ths_values:
+                        ths_fallback_codes.add(code)
+                        return code, ths_values
                 stop_event.set()
                 cached = _read_history_cache(cache, code, hour_key, target_date)
                 return code, cached or []
@@ -713,11 +922,28 @@ def get_sector_fund_flow_history(
                 stop_event.set()
                 cached = _read_history_cache(cache, code, hour_key, target_date)
                 histories[code] = cached or []
+    warnings = []
+    if dataapi_used:
+        warnings.append(
+            "Used dataapi/bkzj as primary source for sector fund-flow history "
+            "(real main-net-inflow from data.eastmoney.com dataapi)."
+        )
+    if push2his_codes:
+        warnings.append(
+            f"push2his used for {len(push2his_codes)} sectors not covered by dataapi."
+        )
+    for code in codes:
+        if code in ths_fallback_codes:
+            warnings.append(
+                f"{code}: push2his and dataapi unavailable; switched to THS industry daily K-line. "
+                "Amount is provided instead of main net inflow."
+            )
+
     return SectorFundFlowHistoryResult(
         date=target_date,
         days=days,
         history_by_code=histories,
-        warnings=[],
+        warnings=warnings,
     )
 
 
