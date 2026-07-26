@@ -67,11 +67,11 @@ def test_help_exits_zero_and_lists_subcommands():
         assert name in out, f"missing subcommand in --help: {name}"
 
 
-def test_nineteen_subcommands_registered():
+def test_twenty_five_subcommands_registered():
     from typer.main import get_command
 
     cmds = get_command(app).commands
-    assert len(cmds) == 19
+    assert len(cmds) == 25
 
 
 def test_default_format_is_json():

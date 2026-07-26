@@ -8,7 +8,7 @@
 
 - 纯数据层：统一封装 A 股行情、市场广度、财务、新闻、资金流、龙虎榜、解禁、行业和概念板块数据。
 - 无 LLM/Agent 依赖：不会导入 `langchain`、`openai`、`anthropic`、`streamlit`、`fastapi` 等应用层或智能体依赖。
-- 结构化返回：19 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
+- 结构化返回：25 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
 - 严格边界：只做数据获取、校验、缓存、格式化和协议适配，不做买卖建议、不做组合管理、不做收益承诺。
 
 ## 安装
@@ -35,7 +35,7 @@ pip install -e ".[test]"
 
 ## Python API 用法
 
-推荐从 `astock_data.api` 导入公开接口。完整公开函数共 19 个：
+推荐从 `astock_data.api` 导入公开接口。完整公开函数共 25 个：
 
 - `resolve_ticker`
 - `get_stock_data`, `get_indicators`, `get_market_breadth`
@@ -43,6 +43,8 @@ pip install -e ".[test]"
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
 - `get_concept_blocks`, `get_fund_flow`, `get_dragon_tiger_board`, `get_lockup_expiry`, `get_industry_comparison`
+- `get_index_kline`, `get_stock_amount`, `get_etf_daily`
+- `get_sector_fund_flow`, `get_sector_fund_flow_history`, `get_sector_strength`
 
 代表性示例：
 
@@ -85,7 +87,7 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 - `--format json|markdown|text`，默认 `json`
 - `--no-cache`，本次调用绕过真实缓存，使用临时缓存目录
 
-19 个子命令：
+25 个子命令：
 
 | 子命令 | 对应 Python API |
 |---|---|
@@ -93,6 +95,9 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 | `kline` | `get_stock_data` |
 | `indicator` | `get_indicators` |
 | `market-breadth` | `get_market_breadth` |
+| `index-kline` | `get_index_kline` |
+| `stock-amount` | `get_stock_amount` |
+| `etf-daily` | `get_etf_daily` |
 | `fundamentals` | `get_fundamentals` |
 | `balance-sheet` | `get_balance_sheet` |
 | `cashflow` | `get_cashflow` |
@@ -108,6 +113,9 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 | `dragon-tiger` | `get_dragon_tiger_board` |
 | `lockup` | `get_lockup_expiry` |
 | `industry` | `get_industry_comparison` |
+| `sector-fund-flow` | `get_sector_fund_flow` |
+| `sector-fund-flow-history` | `get_sector_fund_flow_history` |
+| `sector-strength` | `get_sector_strength` |
 
 ## MCP 设置
 
@@ -133,7 +141,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 
 示例文件见 `examples/mcp_config.json`。不要配置 HTTP 或 SSE，本包当前决策是 stdio only。
 
-19 个 MCP tools：
+25 个 MCP tools：
 
 - `resolve_ticker`
 - `get_stock_data`, `get_indicators`, `get_market_breadth`
@@ -141,6 +149,12 @@ opencode/Claude Code 风格 MCP 配置片段：
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
 - `get_concept_blocks`, `get_fund_flow`, `get_dragon_tiger_board`, `get_lockup_expiry`, `get_industry_comparison`
+- `get_index_kline`
+- `get_stock_amount`
+- `get_etf_daily`
+- `get_sector_fund_flow`
+- `get_sector_fund_flow_history`
+- `get_sector_strength`
 
 ## 数据源
 

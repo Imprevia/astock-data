@@ -236,3 +236,77 @@ def test_no_persistent_state_file_created(tmp_path, monkeypatch) -> None:
 
     assert result.board_ladders == {}
     assert not list(tmp_path.glob("*.sqlite"))
+
+
+def test_limit_down_rows_collects_individual_limit_down_stocks() -> None:
+    eastmoney = FakeEastmoney(
+        [
+            {"f12": "000001", "f14": "平安银行", "f2": 10.98, "f3": 9.8},
+            {"f12": "688017", "f14": "绿的谐波", "f2": 8.0, "f3": -19.5},
+            {"f12": "600001", "f14": "*ST样本", "f2": 4.8, "f3": -4.8},
+        ]
+    )
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=eastmoney,
+        stock_data_func=lambda *args: _bars(args[0], [10, 11, 12.1]),
+    )
+
+    codes = [item.code for item in result.limit_down_rows]
+    assert "688017" in codes
+    assert "600001" in codes
+    assert result.limit_stats.limit_down_count == len(result.limit_down_rows)
+    item = next(item for item in result.limit_down_rows if item.code == "688017")
+    assert item.name == "绿的谐波"
+    assert item.change_pct == -19.5
+
+
+def test_board_item_reason_enriched_from_hot_stocks(monkeypatch) -> None:
+    from astock_data.models import HotStockItem, HotStocksResult
+
+    rows = [{"f12": "688017", "f14": "绿的谐波", "f2": 14.52, "f3": 20.0}]
+    eastmoney = FakeEastmoney(rows)
+
+    def fake_hot_stocks(curr_date: str = "") -> HotStocksResult:
+        return HotStocksResult(
+            source="test",
+            retrieved_at=dt.datetime(2026, 6, 17, tzinfo=dt.UTC),
+            date=dt.date(2026, 6, 17),
+            items=[HotStockItem(code="688017", name="绿的谐波", reason="算力+国企改革")],
+            theme_frequency={"算力": 1, "国企改革": 1},
+        )
+
+    monkeypatch.setattr("astock_data.services.signals_a.get_hot_stocks", fake_hot_stocks)
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=eastmoney,
+        stock_data_func=lambda *args: _bars(
+            args[0], [10.0, 12.0, 12.1, 14.52], start="2026-06-14"
+        ),
+    )
+
+    all_items = [item for items in result.board_ladders.values() for item in items]
+    target = next(item for item in all_items if item.code == "688017")
+    assert target.reason == "算力+国企改革"
+
+
+def test_hot_stocks_failure_degrades_gracefully(monkeypatch) -> None:
+    def raising_hot_stocks(curr_date: str = "") -> None:
+        raise RuntimeError("ths hot stocks unavailable")
+
+    monkeypatch.setattr("astock_data.services.signals_a.get_hot_stocks", raising_hot_stocks)
+    eastmoney = FakeEastmoney(
+        [{"f12": "688017", "f14": "绿的谐波", "f2": 14.52, "f3": 20.0}]
+    )
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=eastmoney,
+        stock_data_func=lambda *args: _bars(args[0], [10.0, 12.0, 14.4]),
+    )
+
+    assert any("hot_stocks reason enrichment skipped" in warning for warning in result.warnings)
+    all_items = [item for items in result.board_ladders.values() for item in items]
+    assert all(item.reason is None for item in all_items)

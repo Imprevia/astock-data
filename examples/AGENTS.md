@@ -11,7 +11,7 @@
 - MCP 服务命令：`python -m astock_data.mcp.server`
 
 ## 允许修改
-- 更新示例以匹配 19 个公开 API、19 个 CLI 子命令和 19 个 MCP tools。
+- 更新示例以匹配 25 个公开 API、25 个 CLI 子命令和 25 个 MCP tools。
 - 保持示例小而清晰，优先展示结构化 JSON 输出。
 
 ## 禁止修改
