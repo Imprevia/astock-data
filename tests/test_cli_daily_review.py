@@ -126,3 +126,112 @@ def test_etf_daily_command_forwards_repeated_codes_and_days_as_json() -> None:
     assert result.exit_code == 0, result.stderr or result.output
     patched.assert_called_once_with(["512100", "515000"], days=13)
     assert json.loads(result.output) == fake.payload
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        ("index-kline", ["cyb"], "get_index_kline"),
+        ("stock-amount", ["000858"], "get_stock_amount"),
+        ("sector-fund-flow", [], "get_sector_fund_flow"),
+        (
+            "sector-fund-flow-history",
+            ["BK0447"],
+            "get_sector_fund_flow_history",
+        ),
+        ("etf-daily", ["512100"], "get_etf_daily"),
+    ],
+)
+@pytest.mark.parametrize("days", ["0", "366"])
+def test_days_option_rejects_values_outside_practical_range_before_api_call(
+    case: tuple[str, list[str], str],
+    days: str,
+) -> None:
+    # Given: 一个超出 1..365 实用范围的天数
+    command, arguments, api_name = case
+    with mock.patch.object(cli_module.api, api_name) as patched:
+        # When: 通过 CLI 调用任一带 --days 的 daily-review 命令
+        result = runner.invoke(app, [command, *arguments, "--days", days])
+
+    # Then: Typer 在进入 API 前以既有参数错误状态拒绝输入
+    assert result.exit_code != 0
+    patched.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "codes", "api_name"),
+    [
+        ("etf-daily", [f"{code:06d}" for code in range(51)], "get_etf_daily"),
+        (
+            "sector-fund-flow-history",
+            [f"BK{code:04d}" for code in range(51)],
+            "get_sector_fund_flow_history",
+        ),
+    ],
+)
+def test_code_list_rejects_more_than_fifty_raw_codes_before_api_call(
+    command: str,
+    codes: list[str],
+    api_name: str,
+) -> None:
+    # Given: 51 个格式有效的原始代码
+    with mock.patch.object(cli_module.api, api_name) as patched:
+        # When: 通过多代码 CLI 命令提交列表
+        result = runner.invoke(app, [command, *codes])
+
+    # Then: CLI 以既有结构化错误状态拒绝并且 API 未调用
+    assert result.exit_code != 0
+    patched.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "invalid_code", "api_name"),
+    [
+        ("etf-daily", "51210X", "get_etf_daily"),
+        ("sector-fund-flow-history", "BK447", "get_sector_fund_flow_history"),
+    ],
+)
+def test_code_list_rejects_invalid_code_format_before_api_call(
+    command: str,
+    invalid_code: str,
+    api_name: str,
+) -> None:
+    # Given: 一个不符合命令代码格式的值
+    with mock.patch.object(cli_module.api, api_name) as patched:
+        # When: 通过多代码 CLI 命令提交该值
+        result = runner.invoke(app, [command, invalid_code])
+
+    # Then: CLI 以既有结构化错误状态拒绝并且 API 未调用
+    assert result.exit_code != 0
+    patched.assert_not_called()
+
+
+def test_etf_code_list_deduplicates_valid_codes_in_first_seen_order() -> None:
+    # Given: 含重复项且顺序可观察的有效 ETF 代码列表
+    fake = FakeResult({"command": "etf-daily"})
+    with mock.patch.object(cli_module.api, "get_etf_daily", return_value=fake) as patched:
+        # When: 通过 ETF 日线命令提交列表
+        result = runner.invoke(app, ["etf-daily", "512100", "515000", "512100"])
+
+    # Then: API 仅收到首见顺序的唯一代码
+    assert result.exit_code == 0, result.stderr or result.output
+    patched.assert_called_once_with(["512100", "515000"], days=10)
+
+
+def test_sector_code_list_deduplicates_valid_codes_in_first_seen_order() -> None:
+    # Given: 含重复项且顺序可观察的有效板块代码列表
+    fake = FakeResult({"command": "sector-fund-flow-history"})
+    with mock.patch.object(
+        cli_module.api,
+        "get_sector_fund_flow_history",
+        return_value=fake,
+    ) as patched:
+        # When: 通过板块资金流历史命令提交列表
+        result = runner.invoke(
+            app,
+            ["sector-fund-flow-history", "BK0447", "BK0912", "BK0447"],
+        )
+
+    # Then: API 仅收到首见顺序的唯一代码
+    assert result.exit_code == 0, result.stderr or result.output
+    patched.assert_called_once_with(["BK0447", "BK0912"], "", 5)

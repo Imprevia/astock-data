@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import datetime as dt
-import re
-import threading
 import json
+import re
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -80,7 +79,6 @@ _EM_TO_THS_SECTOR_MAP: Mapping[str, str] = {
 }
 _THS_INDUSTRY_KLINE_URL = "http://d.10jqka.com.cn/v6/line/bk_{code}/01/last.js"
 _THS_JSONP_RE = re.compile(r"\((\{.*\})\)\s*;?\s*$", re.DOTALL)
-_DATAAPI_BKZJ_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
 
 
 def _now_utc() -> dt.datetime:
@@ -700,68 +698,6 @@ def _em_to_ths_code(code: str) -> str | None:
     return _EM_TO_THS_SECTOR_MAP.get(code.upper())
 
 
-def _fetch_dataapi_sector_fund_flow(
-    codes: list[str],
-    days: int = 5,
-    settings: AStockSettings | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Fetch real cumulative sector fund flow from Eastmoney dataapi in one request."""
-    cfg = settings or get_settings()
-    headers = {
-        "User-Agent": getattr(cfg, "user_agent", _USER_AGENT),
-        "Referer": "https://data.eastmoney.com/bkzj/hy.html",
-    }
-    key = {1: "f62", 5: "f164", 10: "f165"}.get(days, "f164")
-
-    try:
-        with requests.Session() as session:
-            response = session.get(
-                _DATAAPI_BKZJ_URL,
-                params={"key": key, "code": "m:90+t:2"},
-                headers=headers,
-                timeout=float(getattr(cfg, "request_timeout", 15.0)),
-            )
-            response.raise_for_status()
-    except requests.RequestException:
-        return {}
-
-    try:
-        payload = response.json()
-    except (json.JSONDecodeError, ValueError):
-        return {}
-
-    data = payload.get("data")
-    if not isinstance(data, Mapping):
-        return {}
-    diff = data.get("diff")
-    if not isinstance(diff, list):
-        return {}
-
-    inflow_by_code: dict[str, float] = {}
-    for item in diff:
-        if not isinstance(item, Mapping):
-            continue
-        bk_code = str(item.get("f12", "")).upper()
-        raw_value = item.get(key)
-        try:
-            inflow_by_code[bk_code] = float(raw_value) if raw_value is not None else 0.0
-        except (TypeError, ValueError):
-            continue
-
-    target_date = _target_trade_date("")
-    result: dict[str, list[dict[str, Any]]] = {}
-    for code in codes:
-        upper_code = code.upper()
-        if upper_code in inflow_by_code:
-            result[code] = [
-                {
-                    "date": target_date,
-                    "main_net_inflow": inflow_by_code[upper_code],
-                }
-            ]
-    return result
-
-
 def _fetch_ths_industry_kline(
     ths_code: str,
     days: int = 5,
@@ -811,17 +747,9 @@ def _fetch_ths_industry_kline(
             if previous_close not in (None, 0.0)
             else None
         )
-        # 同花顺行业K线不含主力资金流；用 涨跌幅×成交额/100 作为资金流方向近似。
-        # 涨为正流入，跌为负流出，量级与主力资金流同维度（元），下游可正常汇总。
-        approx_inflow = (
-            pct_change * amount / 100.0
-            if pct_change is not None
-            else None
-        )
         result.append(
             {
                 "date": f"{date_raw[:4]}-{date_raw[4:6]}-{date_raw[6:8]}",
-                "main_net_inflow": approx_inflow,
                 "close": close,
                 "amount": amount,
                 "pct_change": pct_change,
@@ -861,28 +789,30 @@ def get_sector_fund_flow_history(
     ths_fallback_codes: set[str] = set()
     push2his_codes: set[str] = set()
 
-    # dataapi 优先：一次请求获取全部行业数据，命中后不再逐个调 push2his。
-    # push2his 被反爬封禁时 3 次重试耗时约 30 秒/行业，30 个行业串行等待就是 15 分钟。
-    # dataapi 走 data.eastmoney.com（数据中心），与被封的 push2his 是不同服务器。
-    try:
-        dataapi_data = _fetch_dataapi_sector_fund_flow(codes, days=days, settings=settings)
-    except Exception:  # noqa: BLE001 - dataapi failure degrades to push2his
-        dataapi_data = {}
-    dataapi_used = bool(dataapi_data)
-    codes_not_in_dataapi = [c for c in codes if c not in dataapi_data]
-
     def pull_one(code: str) -> tuple[str, list[dict[str, Any]]]:
-        # dataapi 已命中的直接返回
-        if code in dataapi_data:
-            return code, dataapi_data[code]
-
         secid = f"90.{code.lower()}"
         with request_gate:
             if stop_event.is_set():
                 cached = _read_history_cache(cache, code, hour_key, target_date)
                 return code, cached or []
+            eastmoney_succeeded = True
             try:
-                values = _em.fetch_sector_fund_flow_history(secid, days=days, client=client)
+                raw_values = _em.fetch_sector_fund_flow_history(
+                    secid,
+                    days=days,
+                    end_date=target_date,
+                    client=client,
+                )
+                values = [
+                    row
+                    for row in raw_values
+                    if isinstance(row.get("date"), str)
+                    and row["date"] <= target_date
+                ]
+            except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
+                eastmoney_succeeded = False
+                values = []
+            if values:
                 push2his_codes.add(code)
                 try:
                     cache.write_general(
@@ -894,23 +824,29 @@ def get_sector_fund_flow_history(
                 except Exception:  # noqa: BLE001 - cache write failure is non-fatal
                     pass
                 return code, values
-            except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
-                ths_code = _em_to_ths_code(code)
-                if ths_code is not None:
-                    try:
-                        ths_values = _fetch_ths_industry_kline(
-                            ths_code,
-                            days=days,
-                            settings=settings,
-                        )
-                    except requests.RequestException:
-                        ths_values = []
-                    if ths_values:
-                        ths_fallback_codes.add(code)
-                        return code, ths_values
+            ths_code = _em_to_ths_code(code)
+            if ths_code is not None:
+                try:
+                    raw_ths_values = _fetch_ths_industry_kline(
+                        ths_code,
+                        days=days,
+                        settings=settings,
+                    )
+                    ths_values = [
+                        row
+                        for row in raw_ths_values
+                        if isinstance(row.get("date"), str)
+                        and row["date"] <= target_date
+                    ]
+                except requests.RequestException:
+                    ths_values = []
+                if ths_values:
+                    ths_fallback_codes.add(code)
+                    return code, ths_values
+            if not eastmoney_succeeded:
                 stop_event.set()
-                cached = _read_history_cache(cache, code, hour_key, target_date)
-                return code, cached or []
+            cached = _read_history_cache(cache, code, hour_key, target_date)
+            return code, cached or []
 
     histories: dict[str, list[dict[str, Any]]] = {code: [] for code in codes}
     with ThreadPoolExecutor(max_workers=8) as executor:
@@ -924,19 +860,14 @@ def get_sector_fund_flow_history(
                 cached = _read_history_cache(cache, code, hour_key, target_date)
                 histories[code] = cached or []
     warnings = []
-    if dataapi_used:
-        warnings.append(
-            "Used dataapi/bkzj as primary source for sector fund-flow history "
-            "(real main-net-inflow from data.eastmoney.com dataapi)."
-        )
     if push2his_codes:
         warnings.append(
-            f"push2his used for {len(push2his_codes)} sectors not covered by dataapi."
+            f"push2his daily fund-flow history used for {len(push2his_codes)} sectors."
         )
     for code in codes:
         if code in ths_fallback_codes:
             warnings.append(
-                f"{code}: push2his and dataapi unavailable; switched to THS industry daily K-line. "
+                f"{code}: push2his unavailable; switched to THS industry daily K-line. "
                 "Amount is provided instead of main net inflow."
             )
 
@@ -968,7 +899,15 @@ def _read_history_cache(
         return None
     payload, _actual = cached
     values = payload.get("values") if isinstance(payload, dict) else None
-    return values if isinstance(values, list) else None
+    if not isinstance(values, list):
+        return None
+    return [
+        row
+        for row in values
+        if isinstance(row, dict)
+        and isinstance(row.get("date"), str)
+        and row["date"] <= target_date
+    ]
 
 
 __all__ = [

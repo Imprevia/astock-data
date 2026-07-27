@@ -116,9 +116,6 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 | `sector-fund-flow` | `get_sector_fund_flow` |
 | `sector-fund-flow-history` | `get_sector_fund_flow_history` |
 | `sector-strength` | `get_sector_strength` |
-| `sector-fund-flow` | `get_sector_fund_flow` |
-| `sector-strength` | `get_sector_strength` |
-| `sector-fund-flow-history` | `get_sector_fund_flow_history` |
 
 ## MCP 设置
 
@@ -164,15 +161,15 @@ opencode/Claude Code 风格 MCP 配置片段：
 | 来源 | 协议 | 主要数据 |
 |---|---|---|
 | mootdx | TCP 7709 | OHLCV K 线、财务快照、F10 文本、股票名称映射 |
-| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级、ETF日K主源 |
-| 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯。dataapi/bkzj 子接口用于行业资金流（push2his被封时的优先源） |
+| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级 |
+| 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
 | 新浪财经 | HTTP | K 线历史、财报三表、个股新闻兜底、市场广度二级兜底、指数K线降级、ETF K线降级 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材、行业K线降级 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
 
 东方财富请求统一经过线程安全限流入口，默认最小间隔 1 秒并带随机抖动，同时启用 UA 随机化及 429/503 自动重试（读取 `Retry-After`），减少批量请求触发风控的概率。腾讯财经请求带 `Referer` 并启用 UA 随机化；新浪财经 K 线和财报请求带 `Referer`，并启用 UA 随机化及 429/503 重试。概念板块数据已从下线的百度 PAE 迁移至东方财富 `slist`。
 
-`get_market_breadth()` 按能力降级：指数快照依次尝试东方财富、腾讯、新浪；涨跌停家数依次尝试东方财富全市场行情、腾讯全市场候选、腾讯不可用时的新浪分页行情。返回结果的 `raw.sources` 会记录 `indices`、`limit_stats`、`board_ladders` 的实际来源；如果只能返回部分结果，`warnings` 会说明失败来源、fallback 来源或连板推导跳过原因。新浪分页属于低频兜底路径，重复调用可能触发上游临时限流。
+`get_market_breadth()` 按能力降级：指数快照依次尝试腾讯、新浪、东方财富；涨跌停家数依次尝试新浪分页、东方财富全市场行情。返回结果的 `raw.sources` 会记录 `indices`、`limit_stats`、`board_ladders` 的实际来源；如果只能返回部分结果，`warnings` 会说明失败来源、fallback 来源或连板推导跳过原因。新浪分页属于低频路径，重复调用可能触发上游临时限流。
 
 ### 数据获取降级链
 
@@ -180,15 +177,15 @@ opencode/Claude Code 风格 MCP 配置片段：
 
 | 接口 | 主源 | 降级1 | 降级2 | 降级3 |
 |---|---|---|---|---|
-| market-breadth 指数 | 东财push2 | 腾讯 | 新浪 | — |
-| market-breadth 涨跌停 | 东财push2 clist | 腾讯 | 新浪分页 | — |
+| market-breadth 指数 | 腾讯 | 新浪 | 东财push2 | — |
+| market-breadth 涨跌停 | 新浪分页 | 东财push2 clist | — | — |
 | index-kline | 东财push2his | 新浪K线 | mootdx | — |
 | stock-amount | 东财push2his | 腾讯quote | — | — |
-| etf-daily | 腾讯批量报价 | 新浪K线 | 东财push2his | — |
-| sector-fund-flow-history | dataapi/bkzj | 东财push2his | 同花顺K线 | SQLite缓存 |
+| etf-daily | 新浪K线 | 东财push2his | — | — |
+| sector-fund-flow-history | 东财push2his | 同花顺行业日K | SQLite缓存 | — |
 | sector-strength | 东财push2 clist | SQLite缓存 | — | — |
 
-dataapi/bkzj 走 `data.eastmoney.com`（数据中心），与被封的 push2/push2his（行情推送）是不同服务器，可独立访问。
+`sector-fund-flow-history` 的同花顺降级只提供行业日 K 的 `date`、`close`、`amount`、`pct_change` 字段，不代表逐日主力净流入。
 
 ## 缓存与限流配置
 

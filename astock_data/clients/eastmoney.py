@@ -82,9 +82,10 @@ def _is_retryable_transport_error(exc: requests.RequestException) -> bool:
 def _retry_after_seconds(response: requests.Response, attempt: int) -> float:
     value = response.headers.get("Retry-After")
     try:
-        return max(0.0, float(int(value))) if value is not None else _RATE_LIMIT_DELAYS[attempt]
+        seconds = float(int(value)) if value is not None else _RATE_LIMIT_DELAYS[attempt]
     except ValueError:
         return _RATE_LIMIT_DELAYS[attempt]
+    return min(seconds, 60.0) if seconds >= 0 else _RATE_LIMIT_DELAYS[attempt]
 
 
 class EastmoneyClient:
@@ -134,62 +135,63 @@ class EastmoneyClient:
         always respected even on failure.
         """
 
-        # The whole throttle window MUST be inside the lock, otherwise two
+        # Each throttle window MUST be inside the lock, otherwise two
         # threads could both read the same stale ``_last_call`` and fire
         # back-to-back requests before either updates the timestamp — that
         # race is exactly the flaw being fixed from the source ``_em_get``.
-        with self._lock:
-            last_exc: requests.RequestException | None = None
-            rate_limited_retry = False
-            for attempt in range(1 + self.max_retries):
-                if attempt == 0:
+        last_exc: requests.RequestException | None = None
+        retry_delay: float | None = None
+        for attempt in range(1 + self.max_retries):
+            if retry_delay is not None:
+                time.sleep(retry_delay)
+                retry_delay = None
+
+            try:
+                with self._lock:
                     wait = self.min_interval - (time.time() - self._last_call)
                     if wait > 0:
                         time.sleep(wait + random.uniform(0.1, 0.5))
-                elif rate_limited_retry:
-                    rate_limited_retry = False
-                else:
-                    delay = _RETRY_DELAYS[min(attempt - 1, len(_RETRY_DELAYS) - 1)]
-                    time.sleep(delay)
-
-                try:
-                    response = self._session.get(
-                        url,
-                        params=params,
-                        headers=headers,
-                        timeout=self.timeout,
-                        **kwargs,
-                    )
-                    self._last_call = time.time()
-                    status = response.status_code
-                    if status in (429, 503):
-                        if attempt >= self.max_retries:
-                            raise RateLimitError(
-                                f"Eastmoney rate-limited ({status}) at {url!r}"
-                            )
-                        delay = _retry_after_seconds(
-                            response,
-                            min(attempt, len(_RATE_LIMIT_DELAYS) - 1),
+                    try:
+                        response = self._session.get(
+                            url,
+                            params=params,
+                            headers=headers,
+                            timeout=self.timeout,
+                            **kwargs,
                         )
-                        time.sleep(delay)
-                        rate_limited_retry = True
-                        continue
-                    self._raise_for_status(response, url)
-                    return response
-                except requests.RequestException as exc:
-                    self._last_call = time.time()
-                    last_exc = exc
-                    if not _is_retryable_transport_error(exc) or attempt >= self.max_retries:
-                        attempts = attempt + 1
-                        raise DataSourceError(
-                            f"Eastmoney request failed after {attempts} attempts: {url!r}: "
-                            f"last error: {type(exc).__name__}: {exc}"
-                        ) from exc
-            else:
-                if last_exc is not None:
+                    finally:
+                        self._last_call = time.time()
+            except requests.RequestException as exc:
+                last_exc = exc
+                if not _is_retryable_transport_error(exc) or attempt >= self.max_retries:
+                    attempts = attempt + 1
                     raise DataSourceError(
-                        f"Eastmoney request failed: {url!r}: {last_exc}"
-                    ) from last_exc
+                        f"Eastmoney request failed after {attempts} attempts: {url!r}: "
+                        f"last error: {type(exc).__name__}: {exc}"
+                    ) from exc
+                retry_delay = _RETRY_DELAYS[
+                    min(attempt, len(_RETRY_DELAYS) - 1)
+                ]
+                continue
+
+            status = response.status_code
+            if status in (429, 503):
+                if attempt >= self.max_retries:
+                    raise RateLimitError(
+                        f"Eastmoney rate-limited ({status}) at {url!r}"
+                    )
+                retry_delay = _retry_after_seconds(
+                    response,
+                    min(attempt, len(_RATE_LIMIT_DELAYS) - 1),
+                )
+                continue
+            self._raise_for_status(response, url)
+            return response
+
+        if last_exc is not None:
+            raise DataSourceError(
+                f"Eastmoney request failed: {url!r}: {last_exc}"
+            ) from last_exc
 
         raise DataSourceError(f"Eastmoney request failed at {url!r}")
 
@@ -629,6 +631,7 @@ def fetch_sector_fund_flow_history(
     secid: str,
     days: int = 5,
     *,
+    end_date: str | None = None,
     client: EastmoneyClient | None = None,
 ) -> list[dict]:
     """Return the recent daily main fund-flow history for one sector.
@@ -651,6 +654,8 @@ def fetch_sector_fund_flow_history(
         "fields1": "f1,f2,f3,f7",
         "fields2": "f51,f52,f53,f54,f55",
     }
+    if end_date is not None:
+        params["end"] = end_date.replace("-", "")
     url = f"{PUSH2HIS_BASE}{PUSH2HIS_FFLOW_DAYKLINE_PATH}"
     payload = cli._get_json(url, params=params)
     data = payload.get("data") if isinstance(payload, Mapping) else None

@@ -1,7 +1,6 @@
 import json
 import time
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
@@ -138,6 +137,56 @@ def test_throttled_get_respects_retry_after_header(monkeypatch):
     assert 5.0 in sleeps
 
 
+def test_throttled_get_caps_retry_after_header(monkeypatch):
+    # Given
+    sleeps: list[float] = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    session = _FakeSession(_FakeResponse(429, headers={"Retry-After": "3600"}))
+
+    # When
+    with pytest.raises(RateLimitError):
+        _get(session, "retry-after-cap")
+
+    # Then
+    assert sleeps == [60.0, 60.0]
+
+
+@pytest.mark.parametrize("retry_after", ["invalid", "-1"])
+def test_throttled_get_falls_back_for_invalid_retry_after(monkeypatch, retry_after):
+    # Given
+    sleeps: list[float] = []
+    monkeypatch.setattr(_http.time, "sleep", sleeps.append)
+    session = _FakeSession(_FakeResponse(429, headers={"Retry-After": retry_after}))
+
+    # When
+    with pytest.raises(RateLimitError):
+        _get(session, f"retry-after-{retry_after}")
+
+    # Then
+    assert sleeps == [2.0, 4.0]
+
+
+def test_throttled_get_sleeps_for_rate_limit_outside_vendor_lock(monkeypatch):
+    # Given
+    vendor = "rate-limit-lock"
+    lock = _http._get_vendor_lock(vendor)
+    lock_states: list[bool] = []
+    monkeypatch.setattr(
+        _http.time,
+        "sleep",
+        lambda _seconds: lock_states.append(lock.locked()),
+    )
+    success = _FakeResponse(200)
+    session = _FakeSession(_FakeResponse(429, headers={"Retry-After": "5"}), success)
+
+    # When
+    response = _get(session, vendor)
+
+    # Then
+    assert response is success
+    assert lock_states == [False]
+
+
 def test_throttled_get_treats_503_as_rate_limit(monkeypatch):
     monkeypatch.setattr(_http.time, "sleep", lambda _seconds: None)
     session = _FakeSession(_FakeResponse(503))
@@ -194,28 +243,32 @@ def test_throttled_get_wraps_exhausted_connection_errors(monkeypatch):
     assert not isinstance(exc_info.value, RateLimitError)
 
 
-def test_throttled_get_serializes_concurrent_calls_by_vendor(monkeypatch):
-    min_interval = 0.05
+def test_throttled_get_keeps_min_interval_sleep_inside_vendor_lock(monkeypatch):
+    # Given
+    vendor = "sina-min-interval"
+    lock = _http._get_vendor_lock(vendor)
+    lock_states: list[bool] = []
+    _http._VENDOR_LAST_CALL[vendor] = 100.0
+    monkeypatch.setattr(_http.time, "time", lambda: 100.0)
     monkeypatch.setattr(_http.random, "uniform", lambda _start, _end: 0.0)
+    monkeypatch.setattr(
+        _http.time,
+        "sleep",
+        lambda _seconds: lock_states.append(lock.locked()),
+    )
     session = _FakeSession(_FakeResponse(200))
 
-    def request_twice() -> None:
-        for _ in range(2):
-            _http.throttled_get(
-                "sina-concurrent",
-                session,
-                "https://example.test/data",
-                min_interval=min_interval,
-                timeout=3.0,
-            )
+    # When
+    _http.throttled_get(
+        vendor,
+        session,
+        "https://example.test/data",
+        min_interval=0.05,
+        timeout=3.0,
+    )
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        list(executor.map(lambda _index: request_twice(), range(5)))
-
-    timestamps = [call["ts"] for call in session.calls]
-    intervals = [later - earlier for earlier, later in zip(timestamps, timestamps[1:])]
-    assert len(session.calls) == 10
-    assert all(interval >= min_interval - 0.05 for interval in intervals)
+    # Then
+    assert lock_states == [True]
 
 
 def test_apply_proxy_sets_both_schemes_and_preserves_default_when_absent():

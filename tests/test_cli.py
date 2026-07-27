@@ -7,6 +7,7 @@ at the module reference the CLI imports, so no real network/vendor code runs.
 from __future__ import annotations
 
 import json
+import re
 from unittest import mock
 
 import pytest
@@ -73,6 +74,26 @@ def test_twenty_five_subcommands_registered():
     cmds = get_command(app).commands
     # 19 core commands + 6 daily-review commands = 25 total.
     assert len(cmds) == 25
+
+
+def test_subcommands_are_registered_once():
+    command_names = [
+        command.name or command.callback.__name__.replace("_", "-")
+        for command in app.registered_commands
+    ]
+
+    assert len(command_names) == 25
+    assert len(command_names) == len(set(command_names))
+
+
+def test_index_kline_help_lists_only_supported_keys():
+    result = runner.invoke(app, ["index-kline", "--help"])
+
+    assert result.exit_code == 0
+    documented_keys = set(
+        re.findall(r"\b(?:sh|szci|cyb|hs300|sz|kc50|zz500)\b", result.output)
+    )
+    assert documented_keys == {"sh", "szci", "cyb", "hs300"}
 
 
 def test_default_format_is_json():

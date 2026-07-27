@@ -11,16 +11,21 @@ from astock_data.services.market_breadth import get_market_breadth
 pytestmark = pytest.mark.unit
 
 
+class EmptyTencent:
+    def index_snapshots(self) -> dict[str, dict]:
+        return {}
+
+
+class EmptySina:
+    def index_snapshots(self) -> dict[str, dict]:
+        return {}
+
+    def market_all(self, **kwargs) -> list[dict]:
+        return []
+
+
 def _stub_empty_tencent_sina(monkeypatch) -> None:
     """Mock Tencent/Sina to return empty so Eastmoney (last fallback) is exercised."""
-    class EmptyTencent:
-        def index_snapshots(self) -> dict[str, dict]:
-            return {}
-    class EmptySina:
-        def index_snapshots(self) -> dict[str, dict]:
-            return {}
-        def market_all(self, **kwargs) -> list[dict]:
-            return []
     monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", EmptyTencent)
     monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", EmptySina)
 
@@ -309,7 +314,13 @@ def test_no_persistent_state_file_created(tmp_path, monkeypatch) -> None:
     assert not list(tmp_path.glob("*.sqlite"))
 
 
-def test_limit_down_rows_collects_individual_limit_down_stocks() -> None:
+def test_limit_down_rows_collects_individual_limit_down_stocks(monkeypatch) -> None:
+    def unavailable_hot_stocks(curr_date: str = "") -> None:
+        raise DataSourceError("hot stocks unavailable")
+
+    monkeypatch.setattr(
+        "astock_data.services.signals_a.get_hot_stocks", unavailable_hot_stocks
+    )
     eastmoney = FakeEastmoney(
         [
             {"f12": "000001", "f14": "平安银行", "f2": 10.98, "f3": 9.8},
@@ -321,6 +332,8 @@ def test_limit_down_rows_collects_individual_limit_down_stocks() -> None:
     result = get_market_breadth(
         "2026-06-17",
         eastmoney=eastmoney,
+        tencent=EmptyTencent(),
+        sina=EmptySina(),
         stock_data_func=lambda *args: _bars(args[0], [10, 11, 12.1]),
     )
 
@@ -353,6 +366,8 @@ def test_board_item_reason_enriched_from_hot_stocks(monkeypatch) -> None:
     result = get_market_breadth(
         "2026-06-17",
         eastmoney=eastmoney,
+        tencent=EmptyTencent(),
+        sina=EmptySina(),
         stock_data_func=lambda *args: _bars(
             args[0], [10.0, 12.0, 12.1, 14.52], start="2026-06-14"
         ),

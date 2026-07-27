@@ -316,16 +316,20 @@ def get_market_breadth(
     date: str = "",
     *,
     eastmoney: EastmoneyClient | None = None,
+    tencent: TencentClient | None = None,
+    sina: SinaClient | None = None,
     stock_data_func: Callable[..., StockDataResult] = get_stock_data,
 ) -> MarketBreadthResult:
     target = _target_date(date)
     client = eastmoney or EastmoneyClient(timeout=3.0, max_retries=0)
-    tencent = TencentClient()
-    sina = SinaClient()
+    tencent_client = tencent or TencentClient()
+    sina_client = sina or SinaClient()
     warnings = [_DERIVED_WARNING]
 
-    indices, index_source = _fetch_indices_with_fallbacks(client, tencent, sina, warnings)
-    rows, row_source = _fetch_limit_rows_with_fallbacks(client, sina, warnings)
+    indices, index_source = _fetch_indices_with_fallbacks(
+        client, tencent_client, sina_client, warnings
+    )
+    rows, row_source = _fetch_limit_rows_with_fallbacks(client, sina_client, warnings)
     if index_source is None and row_source is None:
         raise DataSourceError("All market breadth index and full-market quote sources failed")
 

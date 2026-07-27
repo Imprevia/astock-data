@@ -240,7 +240,7 @@ class TestJsonSerializable:
             "get_lockup_expiry": (server.get_lockup_expiry, ("000001", "2026-01-02", 90)),
             "get_industry_comparison": (server.get_industry_comparison, ("000001", "2026-01-02", 20)),
             "get_sector_fund_flow": (server.get_sector_fund_flow, ("2026-01-02", 5)),
-            "get_sector_fund_flow_history": (server.get_sector_fund_flow_history, (["90.BK0428"], "2026-01-02", 5)),
+            "get_sector_fund_flow_history": (server.get_sector_fund_flow_history, (["BK0428"], "2026-01-02", 5)),
             "get_sector_strength": (server.get_sector_strength, ("2026-01-02",)),
         }
 
@@ -324,6 +324,121 @@ class TestErrorPayload:
         server = _server_module()
         with pytest.raises(RuntimeError, match="boom"):
             server.get_fundamentals("000001", "2026-01-02")
+
+
+class TestInputBoundaries:
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("get_index_kline", ("sh", 0)),
+            ("get_index_kline", ("sh", 366)),
+            ("get_stock_amount", ("000001", 0)),
+            ("get_stock_amount", ("000001", 366)),
+            ("get_etf_daily", (["512480"], 0)),
+            ("get_etf_daily", (["512480"], 366)),
+            ("get_sector_fund_flow", ("", 0)),
+            ("get_sector_fund_flow", ("", 366)),
+            ("get_sector_fund_flow_history", (["BK0447"], "", 0)),
+            ("get_sector_fund_flow_history", (["BK0447"], "", 366)),
+        ],
+    )
+    def test_days_outside_supported_range_returns_error_before_api_call(
+        self, monkeypatch, tool_name, args
+    ):
+        # Given
+        def _unexpected_call(*_args, **_kwargs):
+            raise AssertionError("API must not be called for invalid days")
+
+        monkeypatch.setattr(f"astock_data.api.{tool_name}", _unexpected_call)
+        server = _server_module()
+
+        # When
+        result = getattr(server, tool_name)(*args)
+
+        # Then
+        assert result["error"]["type"] == "MarketValidationError"
+        assert set(result["error"]) == {"type", "message"}
+
+    @pytest.mark.parametrize(
+        ("tool_name", "codes", "days"),
+        [
+            ("get_etf_daily", [], 10),
+            ("get_etf_daily", [f"{index:06d}" for index in range(51)], 10),
+            ("get_etf_daily", ["51248X"], 10),
+            ("get_sector_fund_flow_history", [], 5),
+            (
+                "get_sector_fund_flow_history",
+                [f"BK{index:04d}" for index in range(51)],
+                5,
+            ),
+            ("get_sector_fund_flow_history", ["90.BK0447"], 5),
+        ],
+    )
+    def test_invalid_codes_returns_error_before_api_call(
+        self, monkeypatch, tool_name, codes, days
+    ):
+        # Given
+        def _unexpected_call(*_args, **_kwargs):
+            raise AssertionError("API must not be called for invalid codes")
+
+        monkeypatch.setattr(f"astock_data.api.{tool_name}", _unexpected_call)
+        server = _server_module()
+
+        # When
+        if tool_name == "get_etf_daily":
+            result = server.get_etf_daily(codes, days)
+        else:
+            result = server.get_sector_fund_flow_history(codes, "", days)
+
+        # Then
+        assert result["error"]["type"] == "MarketValidationError"
+        assert set(result["error"]) == {"type", "message"}
+
+    @pytest.mark.parametrize(
+        ("tool_name", "codes", "expected"),
+        [
+            ("get_etf_daily", ["512480", "159995", "512480"], ["512480", "159995"]),
+            (
+                "get_sector_fund_flow_history",
+                ["BK0447", "BK0733", "BK0447"],
+                ["BK0447", "BK0733"],
+            ),
+        ],
+    )
+    def test_duplicate_codes_are_removed_in_first_seen_order(
+        self, monkeypatch, tool_name, codes, expected
+    ):
+        # Given
+        from astock_data.models.base import ResultBase
+
+        received = []
+
+        def _capture(actual_codes, *_args):
+            received.extend(actual_codes)
+            return ResultBase.model_construct(source="stub", retrieved_at=_now())
+
+        monkeypatch.setattr(f"astock_data.api.{tool_name}", _capture)
+        server = _server_module()
+
+        # When
+        if tool_name == "get_etf_daily":
+            result = server.get_etf_daily(codes, 10)
+        else:
+            result = server.get_sector_fund_flow_history(codes, "", 5)
+
+        # Then
+        assert received == expected
+        assert result["source"] == "stub"
+
+    def test_index_kline_description_lists_supported_keys(self):
+        # Given
+        tools = {tool.name: tool for tool in asyncio.run(_server_module().mcp.list_tools())}
+
+        # When
+        description = tools["get_index_kline"].description or ""
+
+        # Then
+        assert "sh/szci/cyb/hs300" in description
 
 
 # ---------------------------------------------------------------------------

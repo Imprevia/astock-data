@@ -33,6 +33,7 @@ _DESKTOP_UA_POOL: Final[tuple[str, ...]] = (
 )
 _RETRY_DELAYS: Final[tuple[float, ...]] = (1.0, 2.0)
 _RATE_LIMIT_DELAYS: Final[tuple[float, ...]] = (2.0, 4.0)
+_MAX_RETRY_AFTER_SECONDS: Final[float] = 60.0
 _DEFAULT_REFERERS: Final[dict[str, str]] = {
     "sina": "https://finance.sina.com.cn/",
     "tencent": "https://gu.qq.com/",
@@ -73,10 +74,16 @@ def _is_retryable_transport_error(exc: requests.RequestException) -> bool:
 
 def _retry_after_seconds(response: requests.Response, attempt: int) -> float:
     value = response.headers.get("Retry-After")
+    fallback = _RATE_LIMIT_DELAYS[attempt]
+    if value is None:
+        return fallback
     try:
-        return max(0.0, float(int(value))) if value is not None else _RATE_LIMIT_DELAYS[attempt]
-    except ValueError:
-        return _RATE_LIMIT_DELAYS[attempt]
+        seconds = float(int(value))
+    except (TypeError, ValueError):
+        return fallback
+    if seconds < 0:
+        return fallback
+    return min(seconds, _MAX_RETRY_AFTER_SECONDS)
 
 
 def throttled_get(
@@ -92,17 +99,16 @@ def throttled_get(
 ) -> requests.Response:
     """Issue one vendor-throttled GET with bounded transport/rate retries."""
 
-    with _get_vendor_lock(vendor):
-        retry_delay: float | None = None
-        for attempt in range(1 + max_retries):
-            if attempt == 0:
+    retry_delay: float | None = None
+    for attempt in range(1 + max_retries):
+        if retry_delay is not None:
+            time.sleep(retry_delay)
+
+        try:
+            with _get_vendor_lock(vendor):
                 wait = min_interval - (time.time() - _VENDOR_LAST_CALL.get(vendor, 0.0))
                 if wait > 0:
                     time.sleep(wait + random.uniform(0.1, 0.5))
-            elif retry_delay is not None:
-                time.sleep(retry_delay)
-
-            try:
                 try:
                     response = session.get(
                         url,
@@ -112,31 +118,31 @@ def throttled_get(
                     )
                 finally:
                     _VENDOR_LAST_CALL[vendor] = time.time()
-            except requests.RequestException as exc:
-                if _is_retryable_transport_error(exc) and attempt < max_retries:
-                    retry_delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
-                    continue
-                attempts = attempt + 1
-                raise DataSourceError(
-                    f"{vendor} request failed after {attempts} attempts: {url!r}: {exc}"
-                ) from exc
+        except requests.RequestException as exc:
+            if _is_retryable_transport_error(exc) and attempt < max_retries:
+                retry_delay = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+                continue
+            attempts = attempt + 1
+            raise DataSourceError(
+                f"{vendor} request failed after {attempts} attempts: {url!r}: {exc}"
+            ) from exc
 
-            status = response.status_code
-            if status in (429, 503):
-                if attempt < max_retries:
-                    retry_delay = _retry_after_seconds(
-                        response,
-                        min(attempt, len(_RATE_LIMIT_DELAYS) - 1),
-                    )
-                    continue
-                raise RateLimitError(
-                    f"{vendor} rate-limited ({status}) at {url!r}"
+        status = response.status_code
+        if status in (429, 503):
+            if attempt < max_retries:
+                retry_delay = _retry_after_seconds(
+                    response,
+                    min(attempt, len(_RATE_LIMIT_DELAYS) - 1),
                 )
-            if status >= 400:
-                raise DataSourceError(
-                    f"{vendor} returned HTTP {status} at {url!r}"
-                )
-            return response
+                continue
+            raise RateLimitError(
+                f"{vendor} rate-limited ({status}) at {url!r}"
+            )
+        if status >= 400:
+            raise DataSourceError(
+                f"{vendor} returned HTTP {status} at {url!r}"
+            )
+        return response
 
     raise DataSourceError(f"{vendor} request failed at {url!r}")
 

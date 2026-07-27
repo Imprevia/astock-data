@@ -193,37 +193,137 @@ def test_industry_comparison_rows_do_not_overclaim_target_industry() -> None:
     assert fake.calls[0][1][1]["fs"] == "m:90+t:2"
 
 
-def test_sector_history_prefers_dataapi_over_push2his(monkeypatch, tmp_path) -> None:
-    """dataapi 命中时不应调用 push2his。"""
-    dataapi_data = {
-        "BK1036": [{"date": "2026-07-21", "main_net_inflow": 5e10}],
-        "BK1201": [{"date": "2026-07-21", "main_net_inflow": -2e10}],
-    }
-    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: dataapi_data, raising=False)
-    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: pytest.fail("push2his should not be called when dataapi hits"), raising=False)
-    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: pytest.fail("THS should not be called"), raising=False)
+@pytest.mark.parametrize("curr_date", [dt.date.today().isoformat(), "2026-07-21"])
+def test_sector_history_uses_push2his_daily_values_for_any_target_date(monkeypatch, tmp_path, curr_date) -> None:
+    unexpected_sessions: list[bool] = []
+    push2his_data = [{"date": "2026-07-20", "main_net_inflow": 1e8}]
 
-    result = get_sector_fund_flow_history(["BK1036", "BK1201"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+    def fail_on_extra_http_session():
+        unexpected_sessions.append(True)
+        raise signals_b.requests.RequestException("unexpected direct HTTP session")
 
-    assert result.history_by_code == dataapi_data
-    assert any("dataapi" in w for w in result.warnings)
-
-
-def test_sector_history_falls_back_to_push2his_when_dataapi_misses(monkeypatch, tmp_path) -> None:
-    """dataapi 未覆盖的行业走 push2his。"""
-    push2his_data = [{"date": "2026-07-21", "main_net_inflow": 1e8}]
-    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+    monkeypatch.setattr(signals_b.requests, "Session", fail_on_extra_http_session)
     monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: push2his_data)
     monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: pytest.fail("THS should not be called"), raising=False)
 
-    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=AStockSettings(cache_dir=tmp_path))
+    result = get_sector_fund_flow_history(
+        ["BK1036"],
+        curr_date,
+        eastmoney=FakeEastmoney(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
 
+    assert unexpected_sessions == []
+    assert result.date == curr_date
     assert result.history_by_code["BK1036"] == push2his_data
 
 
-def test_sector_history_uses_ths_when_dataapi_and_push2his_fail(monkeypatch, tmp_path) -> None:
-    fallback = [{"date": "2026-07-21", "main_net_inflow": 5e10, "close": 16444.838, "amount": 517976460000.0, "pct_change": 9.83}]
-    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
+def test_sector_history_excludes_eastmoney_rows_after_target_date(
+    monkeypatch, tmp_path
+) -> None:
+    # Given: Eastmoney returns one eligible row and one row after the target.
+    captured_end_dates: list[str | None] = []
+
+    def fetch_history(*args, **kwargs):
+        captured_end_dates.append(kwargs.get("end_date"))
+        return [
+            {"date": "2026-07-21", "main_net_inflow": 1e8},
+            {"date": "2026-07-22", "main_net_inflow": 2e8},
+        ]
+
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", fetch_history)
+    monkeypatch.setattr(
+        signals_b,
+        "_fetch_ths_industry_kline",
+        lambda *args, **kwargs: pytest.fail("THS should not be called"),
+    )
+
+    # When: sector history is requested for the historical target date.
+    result = get_sector_fund_flow_history(
+        ["BK1036"],
+        "2026-07-21",
+        eastmoney=FakeEastmoney(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
+
+    # Then: the cutoff reaches Eastmoney and no newer row escapes the service.
+    assert captured_end_dates == ["2026-07-21"]
+    assert result.history_by_code["BK1036"] == [
+        {"date": "2026-07-21", "main_net_inflow": 1e8}
+    ]
+
+
+def test_sector_history_continues_after_successful_empty_eastmoney_response(
+    monkeypatch, tmp_path
+) -> None:
+    # Given: one sector is empty, while the following sector has real daily data.
+    requested_secids: list[str] = []
+    daily_data = [{"date": "2026-07-21", "main_net_inflow": 1e8}]
+    real_executor = signals_b.ThreadPoolExecutor
+
+    def fetch_history(secid, **kwargs):
+        requested_secids.append(secid)
+        return daily_data if secid == "90.bk1036" else []
+
+    monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", fetch_history)
+    monkeypatch.setattr(
+        signals_b,
+        "ThreadPoolExecutor",
+        lambda max_workers: real_executor(max_workers=1),
+    )
+
+    # When: the empty sector is processed before the sector with data.
+    result = get_sector_fund_flow_history(
+        ["BK9999", "BK1036"],
+        "2026-07-21",
+        eastmoney=FakeEastmoney(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
+
+    # Then: both sectors make their own Eastmoney request.
+    assert requested_secids == ["90.bk9999", "90.bk1036"]
+    assert result.history_by_code["BK1036"] == daily_data
+
+
+def test_sector_history_excludes_ths_rows_after_target_and_uses_cache(
+    monkeypatch, tmp_path
+) -> None:
+    # Given: Eastmoney fails, THS has only a newer row, and eligible cache exists.
+    settings = AStockSettings(cache_dir=tmp_path)
+    cached = [{"date": "2026-07-20", "main_net_inflow": 2e8}]
+    SQLiteStructuredCache(tmp_path).write_general(
+        "sector_history",
+        "BK1036:2026-07-21-15",
+        "2026-07-21",
+        {"values": cached},
+    )
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_fund_flow_history",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")),
+    )
+    monkeypatch.setattr(
+        signals_b,
+        "_fetch_ths_industry_kline",
+        lambda *args, **kwargs: [
+            {
+                "date": "2026-07-22",
+                "close": 16444.838,
+                "amount": 517976460000.0,
+                "pct_change": 9.83,
+            }
+        ],
+    )
+
+    # When: sector history is requested for the earlier target date.
+    result = get_sector_fund_flow_history(["BK1036"], "2026-07-21", settings=settings)
+
+    # Then: the future THS row is rejected and cache degradation remains active.
+    assert result.history_by_code["BK1036"] == cached
+
+
+def test_sector_history_uses_ths_factual_kline_when_push2his_fails(monkeypatch, tmp_path) -> None:
+    fallback = [{"date": "2026-07-21", "close": 16444.838, "amount": 517976460000.0, "pct_change": 9.83}]
     monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
     monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: fallback, raising=False)
 
@@ -237,7 +337,6 @@ def test_sector_history_uses_cache_when_all_sources_fail(monkeypatch, tmp_path) 
     settings = AStockSettings(cache_dir=tmp_path)
     cached = [{"date": "2026-07-20", "main_net_inflow": 2e8}]
     SQLiteStructuredCache(tmp_path).write_general("sector_history", "BK1036:2026-07-21-15", "2026-07-21", {"values": cached})
-    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
     monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
     monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("down")), raising=False)
 
@@ -247,7 +346,6 @@ def test_sector_history_uses_cache_when_all_sources_fail(monkeypatch, tmp_path) 
 
 
 def test_sector_history_is_empty_when_all_sources_and_cache_fail(monkeypatch, tmp_path) -> None:
-    monkeypatch.setattr(signals_b, "_fetch_dataapi_sector_fund_flow", lambda *args, **kwargs: {}, raising=False)
     monkeypatch.setattr(eastmoney_module, "fetch_sector_fund_flow_history", lambda *args, **kwargs: (_ for _ in ()).throw(ConnectionError("blocked")))
     monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: [], raising=False)
 
@@ -263,4 +361,5 @@ def test_ths_sector_history_parses_close_amount_and_change(monkeypatch) -> None:
 
     rows = signals_b._fetch_ths_industry_kline("881121", days=1, settings=AStockSettings())
 
-    assert rows == [{"date": "2026-07-21", "main_net_inflow": 300.0, "close": 110.0, "amount": 3000.0, "pct_change": 10.0}]
+    assert rows == [{"date": "2026-07-21", "close": 110.0, "amount": 3000.0, "pct_change": 10.0}]
+    assert all("main_net_inflow" not in row for row in rows)

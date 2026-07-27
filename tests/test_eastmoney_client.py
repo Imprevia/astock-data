@@ -199,6 +199,23 @@ def test_throttle_sleep_respected_between_sequential_calls(fake_session, monkeyp
     assert slept[0] >= 0.5
 
 
+def test_throttle_sleep_occurs_inside_lock(fake_session, monkeypatch):
+    client = EastmoneyClient(
+        min_interval=0.5, timeout=5.0, session=fake_session
+    )
+    client._last_call = time.time()
+    sleep_lock_states: list[bool] = []
+    monkeypatch.setattr(
+        em_module.time,
+        "sleep",
+        lambda _seconds: sleep_lock_states.append(client._lock.locked()),
+    )
+
+    client.get(em_module.DATACENTER_URL)
+
+    assert sleep_lock_states == [True]
+
+
 # ---------------------------------------------------------------------------
 # datacenter helper.
 # ---------------------------------------------------------------------------
@@ -259,6 +276,25 @@ def test_fetch_sector_fund_flow_rank_uses_industry_fs():
 
     assert em_module.fetch_sector_fund_flow_rank(client=fake) == []
     assert fake.calls[0][1]["fs"] == "m:90+s:4"
+
+
+def test_fetch_sector_fund_flow_history_sends_normalized_end_date(
+    requests_mocker, client
+):
+    # Given: the sector history endpoint returns no rows.
+    url = em_module.PUSH2HIS_BASE + em_module.PUSH2HIS_FFLOW_DAYKLINE_PATH
+    requests_mocker.get(url, json={"data": {"klines": []}})
+
+    # When: history is requested with an ISO-formatted cutoff date.
+    rows = em_module.fetch_sector_fund_flow_history(
+        "90.bk1036",
+        end_date="2026-07-21",
+        client=client,
+    )
+
+    # Then: Eastmoney receives its compact end-date query parameter.
+    assert rows == []
+    assert requests_mocker.request_history[-1].qs["end"] == ["20260721"]
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +662,83 @@ def test_get_honors_retry_after_for_429(monkeypatch):
 
     assert response.status_code == 200
     assert sleep_calls == [5.0]
+
+
+def test_get_caps_retry_after_at_sixty_seconds(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            _FakeResponse(status_code=429, headers={"Retry-After": "3600"}),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(em_module.time, "sleep", sleep_calls.append)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert sleep_calls == [60.0]
+
+
+@pytest.mark.parametrize("retry_after", ["invalid", "-1"])
+def test_get_uses_backoff_for_invalid_retry_after(monkeypatch, retry_after):
+    session = _FakeSession(
+        outcomes=[
+            _FakeResponse(status_code=429, headers={"Retry-After": retry_after}),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(em_module.time, "sleep", sleep_calls.append)
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert sleep_calls == [em_module._RATE_LIMIT_DELAYS[0]]
+
+
+def test_rate_limit_retry_sleep_occurs_outside_lock(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            _FakeResponse(status_code=429, headers={"Retry-After": "5"}),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_lock_states: list[tuple[float, bool]] = []
+    monkeypatch.setattr(
+        em_module.time,
+        "sleep",
+        lambda seconds: sleep_lock_states.append((seconds, client._lock.locked())),
+    )
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert sleep_lock_states == [(5.0, False)]
+
+
+def test_transport_retry_sleep_occurs_outside_lock(monkeypatch):
+    session = _FakeSession(
+        outcomes=[
+            requests.ConnectionError("connection reset"),
+            _FakeResponse(json_data={"ok": True}),
+        ]
+    )
+    client = EastmoneyClient(min_interval=0.0, timeout=5.0, session=session)
+    sleep_lock_states: list[tuple[float, bool]] = []
+    monkeypatch.setattr(
+        em_module.time,
+        "sleep",
+        lambda seconds: sleep_lock_states.append((seconds, client._lock.locked())),
+    )
+
+    response = client.get(em_module.DATACENTER_URL)
+
+    assert response.status_code == 200
+    assert sleep_lock_states == [(em_module._RETRY_DELAYS[0], False)]
 
 
 def test_get_raises_rate_limit_error_after_429_retries(monkeypatch):

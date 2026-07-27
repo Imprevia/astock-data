@@ -22,18 +22,24 @@ Run directly (defaults to stdio)::
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Final
 
 from fastmcp import FastMCP
 
 import astock_data.api as api
-from astock_data.errors import AStockDataError
+from astock_data.errors import AStockDataError, MarketValidationError
 
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
 
 mcp = FastMCP("astock-data")
+
+_MAX_CODES: Final = 50
+_MAX_DAYS: Final = 365
+_ETF_CODE_PATTERN: Final = re.compile(r"\d{6}")
+_SECTOR_CODE_PATTERN: Final = re.compile(r"BK\d{4}")
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +74,28 @@ def _error_payload(err: AStockDataError) -> dict[str, dict[str, str]]:
             "message": str(err),
         }
     }
+
+
+def _parse_days(days: int) -> int:
+    if 1 <= days <= _MAX_DAYS:
+        return days
+    raise MarketValidationError(f"days must be between 1 and {_MAX_DAYS}")
+
+
+def _parse_codes(
+    codes: list[str], pattern: re.Pattern[str], code_type: str
+) -> list[str]:
+    if not codes:
+        raise MarketValidationError("codes must not be empty")
+    if len(codes) > _MAX_CODES:
+        raise MarketValidationError(f"codes must contain at most {_MAX_CODES} items")
+    invalid_code = next(
+        (code for code in codes if pattern.fullmatch(code) is None),
+        None,
+    )
+    if invalid_code is not None:
+        raise MarketValidationError(f"invalid {code_type} code: {invalid_code!r}")
+    return list(dict.fromkeys(codes))
 
 
 # ---------------------------------------------------------------------------
@@ -321,9 +349,9 @@ def get_industry_comparison(
 
 @mcp.tool()
 def get_index_kline(key: str, days: int = 10) -> dict[str, Any]:
-    """Fetch index K-line bars for a key (sh/sz/cyb/kc50/hs300/zz500)."""
+    """Fetch index K-line bars for a key (sh/szci/cyb/hs300)."""
     try:
-        return _serialize(api.get_index_kline(key, days))
+        return _serialize(api.get_index_kline(key, _parse_days(days)))
     except AStockDataError as exc:
         return _error_payload(exc)
 
@@ -332,7 +360,7 @@ def get_index_kline(key: str, days: int = 10) -> dict[str, Any]:
 def get_stock_amount(ticker: str, days: int = 10) -> dict[str, Any]:
     """Fetch recent daily amount (成交额) series for an A-share."""
     try:
-        return _serialize(api.get_stock_amount(ticker, days))
+        return _serialize(api.get_stock_amount(ticker, _parse_days(days)))
     except AStockDataError as exc:
         return _error_payload(exc)
 
@@ -341,7 +369,8 @@ def get_stock_amount(ticker: str, days: int = 10) -> dict[str, Any]:
 def get_etf_daily(codes: list[str], days: int = 10) -> dict[str, Any]:
     """Fetch recent daily K-line for a set of ETF codes."""
     try:
-        return _serialize(api.get_etf_daily(codes, days))
+        parsed_codes = _parse_codes(codes, _ETF_CODE_PATTERN, "ETF")
+        return _serialize(api.get_etf_daily(parsed_codes, _parse_days(days)))
     except AStockDataError as exc:
         return _error_payload(exc)
 
@@ -352,7 +381,7 @@ def get_sector_fund_flow(
 ) -> dict[str, Any]:
     """Fetch industry sector fund-flow ranking + recent history."""
     try:
-        return _serialize(api.get_sector_fund_flow(curr_date, days))
+        return _serialize(api.get_sector_fund_flow(curr_date, _parse_days(days)))
     except AStockDataError as exc:
         return _error_payload(exc)
 
@@ -363,7 +392,14 @@ def get_sector_fund_flow_history(
 ) -> dict[str, Any]:
     """Fetch multi-sector recent daily main fund-flow history."""
     try:
-        return _serialize(api.get_sector_fund_flow_history(codes, curr_date, days))
+        parsed_codes = _parse_codes(codes, _SECTOR_CODE_PATTERN, "sector")
+        return _serialize(
+            api.get_sector_fund_flow_history(
+                parsed_codes,
+                curr_date,
+                _parse_days(days),
+            )
+        )
     except AStockDataError as exc:
         return _error_payload(exc)
 
