@@ -153,7 +153,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 | 来源 | 协议 | 主要数据 |
 |---|---|---|
 | mootdx | TCP 7709 | OHLCV K 线、财务快照、F10 文本、股票名称映射 |
-| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级 |
+| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级、ETF日K主源 |
 | 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯。dataapi/bkzj 子接口用于行业资金流（push2his被封时的优先源） |
 | 新浪财经 | HTTP | K 线历史、财报三表、个股新闻兜底、市场广度二级兜底、指数K线降级、ETF K线降级 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材、行业K线降级 |
@@ -173,7 +173,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 | market-breadth 涨跌停 | 东财push2 clist | 腾讯 | 新浪分页 | — |
 | index-kline | 东财push2his | 新浪K线 | mootdx | — |
 | stock-amount | 东财push2his | 腾讯quote | — | — |
-| etf-daily | 东财push2his | 新浪K线 | — | — |
+| etf-daily | 腾讯批量报价 | 新浪K线 | 东财push2his | — |
 | sector-fund-flow-history | dataapi/bkzj | 东财push2his | 同花顺K线 | SQLite缓存 |
 | sector-strength | 东财push2 clist | SQLite缓存 | — | — |
 

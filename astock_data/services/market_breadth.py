@@ -150,14 +150,8 @@ def _fetch_indices_with_fallbacks(
     sina: SinaClient,
     warnings: list[str],
 ) -> tuple[list[IndexSnapshot], str | None]:
+    # 腾讯/新浪优先，东财push2被封概率最高放最后。
     failures: list[tuple[str, Exception]] = []
-    try:
-        indices = _fetch_indices(eastmoney)
-        if len(indices) == len(_INDEX_SECIDS):
-            return indices, "eastmoney"
-        raise DataSourceError("Eastmoney index source returned incomplete rows")
-    except Exception as exc:
-        failures.append(("eastmoney", exc))
 
     for source, fetch in (
         ("tencent", tencent.index_snapshots),
@@ -166,12 +160,21 @@ def _fetch_indices_with_fallbacks(
         try:
             indices = _snapshots_from_mapping(fetch())
             if len(indices) == len(_INDEX_SECIDS):
-                for failed, exc in failures:
-                    warnings.append(_fallback_warning("indices", failed, source, exc))
                 return indices, source
             raise DataSourceError(f"{source} index source returned incomplete rows")
         except Exception as exc:
             failures.append((source, exc))
+
+    # 东财作为最后兜底
+    try:
+        indices = _fetch_indices(eastmoney)
+        if len(indices) == len(_INDEX_SECIDS):
+            for failed, exc in failures:
+                warnings.append(_fallback_warning("indices", failed, "eastmoney", exc))
+            return indices, "eastmoney"
+        raise DataSourceError("Eastmoney index source returned incomplete rows")
+    except Exception as exc:
+        failures.append(("eastmoney", exc))
 
     for source, exc in failures:
         warnings.append(_failure_warning("indices", source, exc))
@@ -183,36 +186,30 @@ def _fetch_limit_rows_with_fallbacks(
     sina: SinaClient,
     warnings: list[str],
 ) -> tuple[list[dict], str | None]:
+    # 新浪优先，东财push2被封概率最高放最后。
     failures: list[tuple[str, Exception]] = []
-    try:
-        rows = eastmoney.clist_all(fields="f12,f14,f2,f3,f6,f8")
-        if rows:
-            return rows, "eastmoney"
-        raise DataSourceError("Eastmoney clist returned no rows")
-    except Exception as exc:
-        failures.append(("eastmoney", exc))
-
-    failures.append(
-        (
-            "tencent",
-            DataSourceError(
-                "Tencent market board endpoint skipped because spike returned HTTP 400"
-            ),
-        )
-    )
 
     try:
         rows = sina.market_all()
         if rows:
-            for failed, exc in failures:
-                warnings.append(_fallback_warning("limit_stats", failed, "sina", exc))
             warnings.append(
-                "limit_stats fallback used Sina market pagination; repeated calls may trigger Sina IP throttling"
+                "limit_stats used Sina market pagination as primary source"
             )
             return rows, "sina"
         raise DataSourceError("Sina market pagination returned no rows")
     except Exception as exc:
         failures.append(("sina", exc))
+
+    # 东财作为最后兜底
+    try:
+        rows = eastmoney.clist_all(fields="f12,f14,f2,f3,f6,f8")
+        if rows:
+            for failed, exc in failures:
+                warnings.append(_fallback_warning("limit_stats", failed, "eastmoney", exc))
+            return rows, "eastmoney"
+        raise DataSourceError("Eastmoney clist returned no rows")
+    except Exception as exc:
+        failures.append(("eastmoney", exc))
 
     for source, exc in failures:
         warnings.append(_failure_warning("limit_stats", source, exc))

@@ -8,6 +8,7 @@ import pandas as pd
 from stockstats import StockDataFrame as Sdf
 
 from astock_data.cache import CsvKlineCache
+from astock_data.clients.eastmoney import EastmoneyClient
 from astock_data.clients.sina import SinaClient
 from astock_data.clients.tdx import TdxClient
 from astock_data.clients.tencent import TencentClient
@@ -31,6 +32,17 @@ from astock_data.resolver import resolve_ticker
 _VALID_PERIODS = {"day", "week", "month", "1min", "5min", "15min", "30min", "60min"}
 _MINUTE_PERIODS = {"1min", "5min", "15min", "30min", "60min"}
 _SINA_PERIODS = {"day", "week", "month", "5min", "15min", "30min", "60min"}
+
+# 东财push2his被封概率高，用低重试配置快速触发降级到新浪/腾讯。
+# 懒加载避免模块导入时创建session（影响测试mock）。
+_fast_em_client: EastmoneyClient | None = None
+
+
+def _get_fast_em_client() -> EastmoneyClient:
+    global _fast_em_client
+    if _fast_em_client is None:
+        _fast_em_client = EastmoneyClient(timeout=5.0, max_retries=1)
+    return _fast_em_client
 
 _INDEX_KLINE_SECIDS = {
     "sh": "1.000001",
@@ -109,7 +121,7 @@ def get_index_kline(key: str, days: int = 10) -> IndexKlineResult:
         warnings.append(f"未知的指数key: {key!r}，支持: {', '.join(sorted(_INDEX_KLINE_SECIDS))}")
     else:
         try:
-            rows = _em.fetch_kline(secid, days=days)
+            rows = _em.fetch_kline(secid, days=days, client=_get_fast_em_client())
             bars = [_to_kline_bar(row) for row in rows]
         except Exception as exc:  # noqa: BLE001 - upstream errors degrade to empty result
             bars = []
@@ -162,7 +174,7 @@ def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
     else:
         secid = f"1.{resolved.code}" if str(resolved.code).startswith("6") else f"0.{resolved.code}"
         try:
-            rows = _em.fetch_kline(secid, days=days)
+            rows = _em.fetch_kline(secid, days=days, client=_get_fast_em_client())
             bars = [_to_kline_bar(row) for row in rows]
         except Exception as exc:  # noqa: BLE001 - upstream errors trigger fallback
             warnings.append(f"获取个股成交额失败(ticker={ticker}): {type(exc).__name__}: {exc}")
@@ -503,9 +515,8 @@ def get_etf_daily(
 ) -> EtfDailyResult:
     """一批行业 ETF 的近 N 日日 K 线（含成交额），替代 akshare ``fund_etf_fund_daily_em``。
 
-    优先东方财富 push2his ``fetch_kline``，失败后降级到新浪 K 线 API。
-    仅支持 daily-review 第二步 ``ETF_MAP`` 中的行业 ETF 代码集合（见
-    ``_INDUSTRY_ETF_CODES``）。未知代码映射到空列表并产生一条 warning。
+    降级链为腾讯批量报价 → 新浪 K 线 → 东财 push2his。腾讯批量报价路径
+    仅保证每根 bar 的 ``close`` 有效，其余 OHLCV 字段均为 0。
     """
     from astock_data.clients import eastmoney as _em
     from astock_data.clients.sina import SinaClient
@@ -514,43 +525,92 @@ def get_etf_daily(
     bars_by_code: dict[str, list[KlineBar]] = {}
     sina_client: SinaClient | None = None
     sina_used = False
+    tencent_used = False
 
+    # 第一轮：腾讯批量报价
+    try:
+        tencent_quotes = TencentClient().quote(codes)
+    except Exception:  # noqa: BLE001 - Tencent failure, try Sina next
+        tencent_quotes = {}
+
+    failed_codes: list[str] = []
     for code in codes:
-        secid = _etf_secid(code)
-        if secid is None:
+        sina_symbol = _etf_sina_symbol(code)
+        if sina_symbol is None:
             bars_by_code[code] = []
             warnings.append(f"未支持的ETF代码（不在行业ETF映射内）: {code}")
             continue
-        try:
-            rows = _em.fetch_kline(secid, days=days)
-            bars_by_code[code] = [_to_kline_bar(row) for row in rows]
-        except Exception:  # noqa: BLE001 - push2his failure, try Sina fallback
-            sina_symbol = _etf_sina_symbol(code)
-            if sina_symbol is not None:
-                try:
-                    if sina_client is None:
-                        sina_client = SinaClient()
-                    sina_rows = sina_client.index_kline(sina_symbol, datalen=days)
-                    if sina_rows:
-                        bars_by_code[code] = [
-                            KlineBar(
-                                date=row["date"],
-                                open=row["open"],
-                                high=row["high"],
-                                low=row["low"],
-                                close=row["close"],
-                                volume=row["volume"],
-                                amount=row["volume"],
-                            )
-                            for row in sina_rows
-                        ]
-                        sina_used = True
-                        continue
-                except Exception:  # noqa: BLE001 - Sina failure degrades to empty
-                    pass
-            bars_by_code[code] = []
-            warnings.append(f"ETF {code} K线拉取失败：push2his and Sina both unavailable")
+        quote = tencent_quotes.get(code)
+        if quote:
+            price = quote.get("price")
+            last_close = quote.get("last_close")
+            if price is not None and price != 0 and last_close is not None and last_close != 0:
+                bars_by_code[code] = [
+                    KlineBar(
+                        date="prev",
+                        open=0,
+                        high=0,
+                        low=0,
+                        close=last_close,
+                        volume=0,
+                        amount=0,
+                    ),
+                    KlineBar(
+                        date="curr",
+                        open=0,
+                        high=0,
+                        low=0,
+                        close=price,
+                        volume=0,
+                        amount=0,
+                    ),
+                ]
+                tencent_used = True
+                continue
+        failed_codes.append(code)
 
-    if sina_used:
-        warnings.append("东财 push2his 不可用，已降级到新浪获取ETF K线")
+    # 第二轮：新浪补取腾讯缺失的ETF（快，每个约1秒）
+    eastmoney_codes: list[str] = []
+    for code in failed_codes:
+        sina_symbol = _etf_sina_symbol(code)
+        try:
+            if sina_client is None:
+                sina_client = SinaClient()
+            sina_rows = sina_client.index_kline(sina_symbol, datalen=days)
+            if sina_rows:
+                bars_by_code[code] = [
+                    KlineBar(
+                        date=row["date"],
+                        open=row["open"],
+                        high=row["high"],
+                        low=row["low"],
+                        close=row["close"],
+                        volume=row["volume"],
+                        amount=row["volume"],
+                    )
+                    for row in sina_rows
+                ]
+                sina_used = True
+                continue
+        except Exception:  # noqa: BLE001 - Sina failure, try Eastmoney next
+            pass
+        eastmoney_codes.append(code)
+
+    # 第三轮：东财兜底（只对新浪失败的ETF）
+    for code in eastmoney_codes:
+        secid = _etf_secid(code)
+        if secid is None:
+            bars_by_code[code] = []
+            continue
+        try:
+            rows = _em.fetch_kline(secid, days=days, client=_get_fast_em_client())
+            bars_by_code[code] = [_to_kline_bar(row) for row in rows]
+        except Exception:  # noqa: BLE001 - both sources failed
+            bars_by_code[code] = []
+            warnings.append(f"ETF {code} K线拉取失败：Sina and push2his both unavailable")
+
+    if tencent_used:
+        warnings.append("腾讯批量报价作为ETF数据主源")
+    elif sina_used:
+        warnings.append("新浪K线作为ETF数据主源")
     return EtfDailyResult(bars_by_code=bars_by_code, warnings=warnings)

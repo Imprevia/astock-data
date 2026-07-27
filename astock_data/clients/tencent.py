@@ -32,13 +32,13 @@ def _market_prefix(code: str) -> str:
     """Map a 6-digit A-share code to its Tencent market prefix.
 
     Rules: ``920``/``43``/``8`` -> ``bj`` (Beijing Exchange), other leading
-    ``6``/``9`` -> ``sh`` (Shanghai), everything else -> ``sz`` (Shenzhen).
+    ``5``/``6``/``9`` -> ``sh`` (Shanghai), everything else -> ``sz`` (Shenzhen).
     """
     if not code:
         return "sz"
     if code.startswith(("920", "43", "8")):
         return "bj"
-    if code.startswith(("6", "9")):
+    if code.startswith(("5", "6", "9")):
         return "sh"
     return "sz"
 

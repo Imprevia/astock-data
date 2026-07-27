@@ -11,6 +11,20 @@ from astock_data.services.market_breadth import get_market_breadth
 pytestmark = pytest.mark.unit
 
 
+def _stub_empty_tencent_sina(monkeypatch) -> None:
+    """Mock Tencent/Sina to return empty so Eastmoney (last fallback) is exercised."""
+    class EmptyTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+    class EmptySina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+        def market_all(self, **kwargs) -> list[dict]:
+            return []
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", EmptyTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", EmptySina)
+
+
 class FakeEastmoney:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
@@ -61,7 +75,19 @@ def _bars(code: str, closes: list[float], start: str = "2026-06-15") -> StockDat
     )
 
 
-def test_market_breadth_counts_limits_and_returns_indices() -> None:
+def test_market_breadth_counts_limits_and_returns_indices(monkeypatch) -> None:
+    # 东财是最后降级源，需要让腾讯/新浪返回空才能触发东财。
+    class EmptyTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+    class EmptySina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+        def market_all(self, **kwargs) -> list[dict]:
+            return []
+    monkeypatch.setattr("astock_data.services.market_breadth.TencentClient", EmptyTencent)
+    monkeypatch.setattr("astock_data.services.market_breadth.SinaClient", EmptySina)
+
     eastmoney = FakeEastmoney(
         [
             {"f12": "000001", "f14": "平安银行", "f2": 10.98, "f3": 9.8},
@@ -113,8 +139,6 @@ def test_eastmoney_failure_uses_tencent_indices_and_sina_rows(monkeypatch) -> No
     assert result.raw["sources"]["limit_stats"] == "sina"
     assert result.limit_stats.limit_up_count == 1
     assert result.limit_stats.limit_down_count == 1
-    assert any("fallback used tencent" in warning for warning in result.warnings)
-    assert any("fallback used sina" in warning for warning in result.warnings)
 
 
 def test_tencent_failure_uses_sina_indices(monkeypatch) -> None:
@@ -143,15 +167,17 @@ def test_tencent_failure_uses_sina_indices(monkeypatch) -> None:
 
     assert result.raw["sources"]["indices"] == "sina"
     assert result.raw["sources"]["limit_stats"] == "sina"
-    assert any("fallback used sina" in warning for warning in result.warnings)
 
 
 def test_partial_result_skips_board_ladders_when_rows_fail(monkeypatch) -> None:
     class FakeTencent:
         def index_snapshots(self) -> dict[str, dict]:
-            raise AssertionError("Eastmoney indices should succeed first")
+            return {}
 
     class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+
         def market_all(self) -> list[dict]:
             raise DataSourceError("sina down")
 
@@ -191,7 +217,8 @@ def test_all_sources_failure_raises_typed_error(monkeypatch) -> None:
         get_market_breadth("2026-06-17", eastmoney=FailingEastmoney([]))
 
 
-def test_board_ladder_derives_three_boards_and_breaks_chain() -> None:
+def test_board_ladder_derives_three_boards_and_breaks_chain(monkeypatch) -> None:
+    _stub_empty_tencent_sina(monkeypatch)
     rows = [{"f12": "688017", "f14": "绿的谐波", "f2": 13.31, "f3": 20.0}]
     eastmoney = FakeEastmoney(rows)
 
@@ -209,7 +236,8 @@ def test_board_ladder_derives_three_boards_and_breaks_chain() -> None:
 
 
 @pytest.mark.parametrize("code", ["920267", "430047"])
-def test_board_ladder_derives_beijing_exchange_codes(code: str) -> None:
+def test_board_ladder_derives_beijing_exchange_codes(code: str, monkeypatch) -> None:
+    _stub_empty_tencent_sina(monkeypatch)
     rows = [{"f12": code, "f14": "北证样本", "f2": 16.9, "f3": 30.0}]
     requested: list[str] = []
 
@@ -249,7 +277,8 @@ def test_board_ladder_derives_beijing_exchange_codes(code: str) -> None:
     assert result.board_ladders[1][0].code == code
 
 
-def test_non_limit_day_breaks_board_chain() -> None:
+def test_non_limit_day_breaks_board_chain(monkeypatch) -> None:
+    _stub_empty_tencent_sina(monkeypatch)
     rows = [{"f12": "688017", "f14": "绿的谐波", "f2": 14.52, "f3": 20.0}]
     eastmoney = FakeEastmoney(rows)
 
@@ -269,6 +298,7 @@ def test_invalid_date_rejected() -> None:
 
 def test_no_persistent_state_file_created(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
+    _stub_empty_tencent_sina(monkeypatch)
     result = get_market_breadth(
         "2026-06-17",
         eastmoney=FakeEastmoney([{"f12": "000001", "f14": "平安银行", "f2": 10.0, "f3": 0.0}]),

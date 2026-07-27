@@ -20,12 +20,21 @@ def test_default_eastmoney_client_is_configured_to_fail_fast(monkeypatch) -> Non
         def clist_all(self, *, fields: str = "") -> list[dict]:
             return [{"f12": "000001", "f14": "平安银行", "f2": 10.0, "f3": 0.0}]
 
-    # Given: get_market_breadth owns construction of its Eastmoney client.
-    monkeypatch.setattr(market_breadth, "EastmoneyClient", FakeEastmoney)
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
 
-    # When: market breadth runs without an injected client.
+    class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+        def market_all(self, **kwargs) -> list[dict]:
+            return []
+
+    monkeypatch.setattr(market_breadth, "EastmoneyClient", FakeEastmoney)
+    monkeypatch.setattr(market_breadth, "TencentClient", FakeTencent)
+    monkeypatch.setattr(market_breadth, "SinaClient", FakeSina)
+
     result = market_breadth.get_market_breadth("2026-06-17")
 
-    # Then: only this service uses a short timeout and a single total attempt.
+    # Eastmoney is now last in the fallback chain, but still uses fast-fail config.
     assert created == [(3.0, 0)]
-    assert result.source == "eastmoney+derived"

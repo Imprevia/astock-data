@@ -615,7 +615,8 @@ def get_sector_strength(
     """
     from astock_data.clients import eastmoney as _em
 
-    client = _eastmoney_client(eastmoney, settings)
+    # 东财push2被封概率高，用低重试配置快速触发缓存回退。
+    client = eastmoney or EastmoneyClient(timeout=5.0, max_retries=1, settings=settings)
     target_date = _target_trade_date(curr_date)
     warnings: list[str] = []
     cache_source: str | None = None

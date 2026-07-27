@@ -490,12 +490,104 @@ def test_sector_fund_flow_history_partial_failure(monkeypatch, tmp_path):
 def test_etf_daily_normal(monkeypatch):
     klines = [{"date": "2026-07-20", "open": 1.0, "high": 1.1, "low": 0.9,
                "close": 1.05, "volume": 1000.0, "amount": 1050.0}]
+    monkeypatch.setattr(
+        "astock_data.services.market_data.TencentClient.quote",
+        lambda self, codes: {},
+    )
     monkeypatch.setattr(_em, "fetch_kline", lambda secid, days=10, **kw: klines)
+    # 新浪是优先源，mock SinaClient.index_kline 返回空让东财兜底触发
+    from astock_data.clients import sina as _sina
+    monkeypatch.setattr(_sina.SinaClient, "index_kline", lambda self, *a, **kw: [])
     from astock_data.api import get_etf_daily
     result = get_etf_daily(["512480", "159995"])
     assert isinstance(result, EtfDailyResult)
     assert len(result.bars_by_code["512480"]) == 1
     assert result.bars_by_code["512480"][0].amount == 1050.0
+
+
+def test_etf_daily_uses_tencent_batch_quotes(monkeypatch):
+    quotes = {
+        "512480": {"price": 1.1, "last_close": 1.152},
+        "159995": {"price": 1.255, "last_close": 1.312},
+    }
+    monkeypatch.setattr(
+        "astock_data.services.market_data.TencentClient.quote",
+        lambda self, codes: quotes,
+    )
+
+    def _unexpected_sina_call(self, *args, **kwargs):
+        raise AssertionError("新浪不应处理腾讯已命中的 ETF")
+
+    monkeypatch.setattr(
+        "astock_data.clients.sina.SinaClient.index_kline",
+        _unexpected_sina_call,
+    )
+
+    from astock_data.api import get_etf_daily
+    result = get_etf_daily(["512480", "159995"], days=10)
+
+    assert [bar.close for bar in result.bars_by_code["512480"]] == [1.152, 1.1]
+    assert [bar.close for bar in result.bars_by_code["159995"]] == [1.312, 1.255]
+    assert all(
+        bar.open == bar.high == bar.low == bar.volume == bar.amount == 0
+        for bars in result.bars_by_code.values()
+        for bar in bars
+    )
+    assert "腾讯批量报价作为ETF数据主源" in result.warnings
+
+
+def test_etf_daily_uses_sina_for_tencent_missing_quote(monkeypatch):
+    monkeypatch.setattr(
+        "astock_data.services.market_data.TencentClient.quote",
+        lambda self, codes: {
+            "512480": {"price": 1.1, "last_close": 1.152},
+            "159995": {"price": 0.0, "last_close": 1.312},
+        },
+    )
+    sina_calls = []
+
+    def _sina_kline(self, symbol, datalen):
+        sina_calls.append(symbol)
+        return [{"date": "2026-07-20", "open": 1.2, "high": 1.3, "low": 1.1,
+                 "close": 1.25, "volume": 1000.0}]
+
+    monkeypatch.setattr(
+        "astock_data.clients.sina.SinaClient.index_kline",
+        _sina_kline,
+    )
+
+    from astock_data.api import get_etf_daily
+    result = get_etf_daily(["512480", "159995"])
+
+    assert sina_calls == ["sz159995"]
+    assert len(result.bars_by_code["512480"]) == 2
+    assert result.bars_by_code["159995"][0].close == 1.25
+    assert "腾讯批量报价作为ETF数据主源" in result.warnings
+
+
+def test_etf_daily_falls_back_to_sina_when_tencent_raises(monkeypatch):
+    def _tencent_failure(self, codes):
+        raise ConnectionError("Tencent unavailable")
+
+    monkeypatch.setattr(
+        "astock_data.services.market_data.TencentClient.quote",
+        _tencent_failure,
+    )
+    monkeypatch.setattr(
+        "astock_data.clients.sina.SinaClient.index_kline",
+        lambda self, symbol, datalen: [
+            {"date": "2026-07-20", "open": 1.0, "high": 1.1, "low": 0.9,
+             "close": 1.05, "volume": 1000.0}
+        ],
+    )
+
+    from astock_data.api import get_etf_daily
+    result = get_etf_daily(["512480"])
+
+    assert len(result.bars_by_code["512480"]) == 1
+    assert result.bars_by_code["512480"][0].close == 1.05
+    assert "新浪K线作为ETF数据主源" in result.warnings
+    assert "腾讯批量报价作为ETF数据主源" not in result.warnings
 
 
 def test_etf_daily_rejects_unknown_code():

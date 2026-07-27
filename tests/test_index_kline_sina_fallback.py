@@ -131,7 +131,7 @@ def test_index_kline_does_not_call_sina_when_eastmoney_succeeds(monkeypatch) -> 
     monkeypatch.setattr(
         eastmoney,
         "fetch_kline",
-        lambda secid, days=10: [
+        lambda secid, days=10, **kwargs: [
             {
                 "date": "2026-07-20",
                 "open": 100.0,
