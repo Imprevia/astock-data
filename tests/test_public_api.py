@@ -1,6 +1,6 @@
 """Public API facade contract tests (Task 20).
 
-Asserts the 19 public functions (``resolve_ticker`` + 18 ``get_*``) are
+Asserts the 25 public functions (``resolve_ticker`` + 24 ``get_*``) are
 importable from the three canonical surfaces, that the ``__all__`` lists have
 the exact expected sizes, and that every public ``get_*`` returns a Pydantic
 ``BaseModel`` subclass (never a plain ``str``) per the plan's "structured

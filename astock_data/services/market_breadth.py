@@ -12,6 +12,7 @@ from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.models import (
     BoardItem,
     IndexSnapshot,
+    LimitDownItem,
     LimitStats,
     MarketBreadthResult,
     StockDataResult,
@@ -223,6 +224,23 @@ def _count_limits(rows: list[dict]) -> LimitStats:
     )
 
 
+def _collect_limit_down_rows(rows: list[dict]) -> list[LimitDownItem]:
+    """Collect individual limit-down stocks (not just the count)."""
+    items: list[LimitDownItem] = []
+    for row in rows:
+        if not _is_limit_down(row):
+            continue
+        items.append(
+            LimitDownItem(
+                code=_row_code(row),
+                name=_row_name(row),
+                close=_row_close(row),
+                change_pct=_row_change_pct(row),
+            )
+        )
+    return items
+
+
 def _has_limit_up_rows(rows: list[dict]) -> bool:
     return any(_is_limit_up(row) for row in rows)
 
@@ -260,6 +278,7 @@ def _derive_board_ladders(
     stock_data_func: Callable[..., StockDataResult],
     warnings: list[str],
     *,
+    hot_reasons: Mapping[str, str] | None = None,
     lookback_days: int = _DEFAULT_LOOKBACK_DAYS,
 ) -> dict[int, list[BoardItem]]:
     ladders: dict[int, list[BoardItem]] = defaultdict(list)
@@ -287,6 +306,7 @@ def _derive_board_ladders(
                 boards=boards,
                 close=_row_close(row),
                 change_pct=_row_change_pct(row),
+                reason=hot_reasons.get(code) if hot_reasons else None,
             )
         )
     return {key: sorted(value, key=lambda item: item.code) for key, value in sorted(ladders.items(), reverse=True)}
@@ -309,8 +329,27 @@ def get_market_breadth(
     if index_source is None and row_source is None:
         raise DataSourceError("All market breadth index and full-market quote sources failed")
 
+    hot_reasons: Mapping[str, str] | None = None
+    try:
+        from astock_data.services.signals_a import get_hot_stocks as _get_hot_stocks
+
+        hot_result = _get_hot_stocks(target.isoformat())
+        hot_reasons = {
+            item.code: item.reason
+            for item in hot_result.items
+            if item.reason
+        }
+    except Exception as exc:  # noqa: BROAD_EXCEPT_OK - reason enrichment is best-effort
+        warnings.append(f"hot_stocks reason enrichment skipped: {exc}")
+
     if rows and _has_limit_up_rows(rows):
-        board_ladders = _derive_board_ladders(rows, target, stock_data_func, warnings)
+        board_ladders = _derive_board_ladders(
+            rows,
+            target,
+            stock_data_func,
+            warnings,
+            hot_reasons=hot_reasons,
+        )
         board_source = "derived.kline.threshold"
     else:
         warnings.append(_BOARD_SKIP_WARNING)
@@ -327,6 +366,7 @@ def get_market_breadth(
         date=target.isoformat(),
         indices=indices,
         limit_stats=_count_limits(rows),
+        limit_down_rows=_collect_limit_down_rows(rows),
         board_ladders=board_ladders,
         description="Market breadth snapshot with fixed-index quotes, limit counts, and derived board ladders.",
         warnings=warnings,

@@ -1,4 +1,4 @@
-"""MCP server for ``astock-data`` — exposes the 19 public API functions as tools.
+"""MCP server for ``astock-data`` — exposes the 25 public API functions as tools.
 
 Uses the official FastMCP Python SDK (`from fastmcp import FastMCP`) over the
 default stdio transport. Each tool is a thin adapter around the public facade
@@ -71,7 +71,7 @@ def _error_payload(err: AStockDataError) -> dict[str, dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Tools — 1:1 with the 19 public API functions
+# Tools — 1:1 with the 25 public API functions
 # ---------------------------------------------------------------------------
 
 
@@ -315,6 +315,64 @@ def get_industry_comparison(
         return _serialize(
             api.get_industry_comparison(ticker, trade_date, top_n)
         )
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_index_kline(key: str, days: int = 10) -> dict[str, Any]:
+    """Fetch index K-line bars for a key (sh/sz/cyb/kc50/hs300/zz500)."""
+    try:
+        return _serialize(api.get_index_kline(key, days))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_stock_amount(ticker: str, days: int = 10) -> dict[str, Any]:
+    """Fetch recent daily amount (成交额) series for an A-share."""
+    try:
+        return _serialize(api.get_stock_amount(ticker, days))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_etf_daily(codes: list[str], days: int = 10) -> dict[str, Any]:
+    """Fetch recent daily K-line for a set of ETF codes."""
+    try:
+        return _serialize(api.get_etf_daily(codes, days))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_sector_fund_flow(
+    curr_date: str = "", days: int = 5
+) -> dict[str, Any]:
+    """Fetch industry sector fund-flow ranking + recent history."""
+    try:
+        return _serialize(api.get_sector_fund_flow(curr_date, days))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_sector_fund_flow_history(
+    codes: list[str], curr_date: str = "", days: int = 5
+) -> dict[str, Any]:
+    """Fetch multi-sector recent daily main fund-flow history."""
+    try:
+        return _serialize(api.get_sector_fund_flow_history(codes, curr_date, days))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_sector_strength(curr_date: str = "") -> dict[str, Any]:
+    """Fetch 6-dimension industry sector strength ranking."""
+    try:
+        return _serialize(api.get_sector_strength(curr_date))
     except AStockDataError as exc:
         return _error_payload(exc)
 

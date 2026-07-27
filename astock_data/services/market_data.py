@@ -500,6 +500,62 @@ def _etf_secid(code: str) -> str | None:
     return f"{prefix}.{digits}"
 
 
+def get_etf_daily(
+    codes: list[str],
+    days: int = 10,
+) -> EtfDailyResult:
+    """一批行业 ETF 的近 N 日日 K 线（含成交额），替代 akshare ``fund_etf_fund_daily_em``。
+
+    复用东方财富 push2his ``fetch_kline``，仅支持 daily-review 第二步
+    ``ETF_MAP`` 中的行业 ETF 代码集合（见 ``_INDUSTRY_ETF_CODES``）。未知代码
+    映射到空列表并产生一条 warning。返回 ``bars_by_code`` 字典供调用方计算
+    ETF 强度（如近日涨跌幅代理份额强弱）。
+    """
+    from astock_data.clients import eastmoney as _em
+
+    warnings: list[str] = []
+    bars_by_code: dict[str, list[KlineBar]] = {}
+    for code in codes:
+        secid = _etf_secid(code)
+        if secid is None:
+            bars_by_code[code] = []
+            warnings.append(f"未支持的ETF代码（不在行业ETF映射内）: {code}")
+            continue
+        try:
+            rows = _em.fetch_kline(secid, days=days)
+            bars_by_code[code] = [_to_kline_bar(row) for row in rows]
+        except Exception as exc:  # noqa: BLE001 - per-ETF failure degrades to empty
+            bars_by_code[code] = []
+            warnings.append(f"ETF {code} K线拉取失败：{type(exc).__name__}: {exc}")
+    return EtfDailyResult(bars_by_code=bars_by_code, warnings=warnings)
+
+
+# ---------------------------------------------------------------------------
+# ETF daily K-line (daily-review step-2 ETF-strength dimension, akshare-free)
+# ---------------------------------------------------------------------------
+
+# Industry ETFs used by daily-review step-2 (sector_strength ETF_MAP).
+# Mapping is code-only; the secid prefix is derived from the leading digit.
+_INDUSTRY_ETF_CODES: frozenset[str] = frozenset(
+    {
+        "512480", "159995", "512010", "512170", "512290", "159928", "515170",
+        "512690", "516160", "515790", "159790", "512800", "512880", "512070",
+        "512660", "512810", "515000", "512330", "512200", "516950", "515220",
+        "512400", "515210", "159611", "159767", "516110", "516270",
+    }
+)
+
+
+def _etf_secid(code: str) -> str | None:
+    """ETF 6-digit code → Eastmoney secid (``1.512480`` for SH, ``0.159995`` for SZ)."""
+    digits = "".join(ch for ch in str(code) if ch.isdigit())
+    if len(digits) != 6 or digits not in _INDUSTRY_ETF_CODES:
+        return None
+    # 沪市 ETF 以 5 开头；深市 ETF 以 1 开头（159xxx）。
+    prefix = "1" if digits.startswith("5") else "0"
+    return f"{prefix}.{digits}"
+
+
 def _etf_sina_symbol(code: str) -> str | None:
     """ETF 6-digit code → Sina symbol (``sh512480`` for SH, ``sz159995`` for SZ)."""
     digits = "".join(ch for ch in str(code) if ch.isdigit())

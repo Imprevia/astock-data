@@ -26,27 +26,33 @@ def _model(model_cls, **kwargs):
     return model_cls(**shared)
 
 
-# The 19 public functions, one per MCP tool.
+# The 25 public functions, one per MCP tool.
 EXPECTED_TOOLS = [
     "resolve_ticker",
-    "get_stock_data",
-    "get_indicators",
-    "get_market_breadth",
-    "get_fundamentals",
     "get_balance_sheet",
     "get_cashflow",
-    "get_income_statement",
-    "get_news",
-    "get_global_news",
-    "get_insider_transactions",
-    "get_profit_forecast",
-    "get_hot_stocks",
-    "get_northbound_flow",
     "get_concept_blocks",
-    "get_fund_flow",
     "get_dragon_tiger_board",
-    "get_lockup_expiry",
+    "get_etf_daily",
+    "get_fund_flow",
+    "get_fundamentals",
+    "get_global_news",
+    "get_hot_stocks",
+    "get_income_statement",
+    "get_index_kline",
+    "get_indicators",
     "get_industry_comparison",
+    "get_insider_transactions",
+    "get_lockup_expiry",
+    "get_market_breadth",
+    "get_news",
+    "get_northbound_flow",
+    "get_profit_forecast",
+    "get_sector_fund_flow",
+    "get_sector_fund_flow_history",
+    "get_sector_strength",
+    "get_stock_amount",
+    "get_stock_data",
 ]
 
 
@@ -76,9 +82,9 @@ def _server_module():
 
 
 class TestToolRegistration:
-    def test_exactly_19_tools_registered(self):
+    def test_exactly_25_tools_registered(self):
         names = _registered_tool_names()
-        assert len(names) == 19
+        assert len(names) == 25
 
     def test_expected_tool_names_match_exactly(self):
         names = _registered_tool_names()
@@ -187,7 +193,7 @@ class TestJsonSerializable:
         json.dumps(result)
         assert result["ticker"] == "688017"
 
-    def test_all_19_tools_produce_json_serializable_output(self, monkeypatch):
+    def test_all_25_tools_produce_json_serializable_output(self, monkeypatch):
         """Every tool, with its api function stubbed to a minimal model,
         must return a dict that ``json.dumps`` accepts."""
         from astock_data.models.base import ResultBase, Ticker
@@ -215,6 +221,9 @@ class TestJsonSerializable:
             "get_stock_data": (server.get_stock_data, ("000001", "2026-01-01", "2026-01-02")),
             "get_indicators": (server.get_indicators, ("000001", "rsi", "2026-01-02", 14)),
             "get_market_breadth": (server.get_market_breadth, ("2026-01-02",)),
+            "get_index_kline": (server.get_index_kline, ("sh", 10)),
+            "get_stock_amount": (server.get_stock_amount, ("000001", 10)),
+            "get_etf_daily": (server.get_etf_daily, (["512480"], 10)),
             "get_fundamentals": (server.get_fundamentals, ("000001", "2026-01-02")),
             "get_balance_sheet": (server.get_balance_sheet, ("000001", "quarterly", "2026-01-02")),
             "get_cashflow": (server.get_cashflow, ("000001", "quarterly", "2026-01-02")),
@@ -230,6 +239,9 @@ class TestJsonSerializable:
             "get_dragon_tiger_board": (server.get_dragon_tiger_board, ("000001", "2026-01-02", 30)),
             "get_lockup_expiry": (server.get_lockup_expiry, ("000001", "2026-01-02", 90)),
             "get_industry_comparison": (server.get_industry_comparison, ("000001", "2026-01-02", 20)),
+            "get_sector_fund_flow": (server.get_sector_fund_flow, ("2026-01-02", 5)),
+            "get_sector_fund_flow_history": (server.get_sector_fund_flow_history, (["90.BK0428"], "2026-01-02", 5)),
+            "get_sector_strength": (server.get_sector_strength, ("2026-01-02",)),
         }
 
         for name in EXPECTED_TOOLS:

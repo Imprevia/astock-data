@@ -1,6 +1,6 @@
 """Typer-based command-line interface for ``astock-data``.
 
-Exposes one subcommand per public facade function (19 in total) plus a
+Exposes one subcommand per public facade function (25 in total) plus a
 ``--format json|markdown|text`` (default ``json``) and ``--no-cache`` option.
 
 ``--format`` / ``--no-cache`` may be passed either before or after the
@@ -475,6 +475,90 @@ def industry(
     _apply_global_options(format=format, no_cache=no_cache)
     _disable_cache()
     _run(lambda: api.get_industry_comparison(symbol, trade_date, top_n))
+
+
+@app.command("index-kline", help="Fetch index K-line data.")
+def index_kline(
+    key: str = typer.Argument(..., help="Index key: sh, sz, cyb, kc50, hs300, zz500."),
+    days: int = typer.Option(10, "--days", help="Number of trading days to return."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_index_kline"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_index_kline(key, days))
+
+
+@app.command("stock-amount", help="Fetch stock trading amount history.")
+def stock_amount(
+    ticker: str = typer.Argument(..., help="Ticker / code / Chinese name."),
+    days: int = typer.Option(10, "--days", help="Number of trading days to return."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_stock_amount"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_stock_amount(ticker, days))
+
+
+@app.command("etf-daily", help="Fetch daily ETF data for one or more codes.")
+def etf_daily(
+    codes: list[str] = typer.Argument(..., help="One or more ETF codes."),
+    days: int = typer.Option(10, "--days", help="Number of trading days to return."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_etf_daily"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_etf_daily(codes, days))
+
+
+@app.command("sector-fund-flow", help="Fetch sector capital fund flow data.")
+def sector_fund_flow(
+    curr_date: Optional[str] = typer.Option(None, "--curr-date", help="Reference date YYYY-MM-DD."),
+    days: int = typer.Option(5, "--days", help="Number of trading days to return."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_sector_fund_flow"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_sector_fund_flow(curr_date or "", days))
+
+
+@app.command("sector-fund-flow-history", help="Fetch sector capital fund flow history for one or more codes.")
+def sector_fund_flow_history(
+    codes: list[str] = typer.Argument(..., help="One or more sector codes."),
+    curr_date: Optional[str] = typer.Option(None, "--curr-date", help="Reference date YYYY-MM-DD."),
+    days: int = typer.Option(5, "--days", help="Number of trading days to return."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_sector_fund_flow_history"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_sector_fund_flow_history(codes, curr_date or "", days))
+
+
+@app.command("sector-strength", help="Fetch sector strength rankings.")
+def sector_strength(
+    curr_date: Optional[str] = typer.Option(None, "--curr-date", help="Reference date YYYY-MM-DD."),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_sector_strength"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _disable_cache()
+    _run(lambda: api.get_sector_strength(curr_date or ""))
 
 
 # ---------------------------------------------------------------------------

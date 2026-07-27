@@ -115,9 +115,17 @@ class BoardItem(BaseModel):
     change_pct: float | None = None
 
 
+class LimitDownItem(BaseModel):
+    code: str
+    name: str
+    close: float | None = None
+    change_pct: float | None = None
+
+
 class MarketBreadthResult(ResultBase):
     date: str
     indices: list[IndexSnapshot]
     limit_stats: LimitStats
     board_ladders: dict[int, list[BoardItem]]
+    limit_down_rows: list[LimitDownItem] = []
     description: str | None = None
