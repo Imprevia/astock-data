@@ -16,7 +16,7 @@
 需要 Python `>=3.10`。
 
 ```bash
-cd G:\workspaces\stock-data-source
+cd G:\workspaces\gupiao\stock-data-source
 pip install -e .
 ```
 
@@ -32,6 +32,10 @@ python -m pip install -e .
 ```bash
 pip install -e ".[test]"
 ```
+
+## 项目文档
+
+修改入口与安全边界见 [`docs/repository-guide.md`](docs/repository-guide.md)，架构不变量见 [`docs/architecture.md`](docs/architecture.md)，本地运行与门禁命令见 [`docs/runbooks.md`](docs/runbooks.md)，当前实现状态见 [`docs/status.md`](docs/status.md)。发布变化继续记录在 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## Python API 用法
 

@@ -1,0 +1,18 @@
+#!/bin/sh
+remote_name="$1"
+
+while read -r local_ref local_oid remote_ref remote_oid
+do
+    case "$local_oid" in
+        *[!0]*) ;;
+        *) continue ;;
+    esac
+    python scripts/check_docs_contract.py \
+        --mode push \
+        --local-oid "$local_oid" \
+        --remote-oid "$remote_oid" \
+        --remote-name "$remote_name" \
+        --remote-ref "$remote_ref" || exit $?
+done
+
+exit 0
