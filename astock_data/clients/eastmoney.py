@@ -41,6 +41,7 @@ PUSH2_BASE = "https://push2.eastmoney.com"
 PUSH2HIS_BASE = "https://push2his.eastmoney.com"
 SEARCH_NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 FAST_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
+GETBKZJ_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
 
 # Endpoint paths under the push2 / push2his hosts.
 PUSH2_FFLOW_KLINE_PATH = "/api/qt/stock/fflow/kline/get"
@@ -624,6 +625,48 @@ def fetch_sector_fund_flow_rank(
 
     # Defensive re-sort by main_net_inflow descending (None sorts last).
     sectors.sort(key=lambda s: (s.get("main_net_inflow") is not None, s.get("main_net_inflow")), reverse=True)
+    return sectors
+
+
+def fetch_sector_five_day_main_net_inflow(
+    *,
+    client: EastmoneyClient | None = None,
+) -> list[dict]:
+    """Return current five-day main-net-inflow totals for industry sectors."""
+    cli = client if client is not None else _get_default_client()
+    payload = cli._get_json(
+        GETBKZJ_URL,
+        params={"key": "f164", "code": "m:90+s:4"},
+    )
+    data = payload.get("data") if isinstance(payload, Mapping) else None
+    if not isinstance(data, Mapping):
+        return []
+    diff = data.get("diff")
+    rows = diff if isinstance(diff, list) else []
+
+    sectors: list[dict] = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        code = row.get("f12")
+        name = row.get("f14")
+        inflow = row.get("f164")
+        if (
+            not isinstance(code, str)
+            or not code
+            or not isinstance(name, str)
+            or not name
+            or isinstance(inflow, bool)
+            or not isinstance(inflow, (int, float))
+        ):
+            continue
+        sectors.append(
+            {
+                "code": code,
+                "name": name,
+                "five_day_main_net_inflow": float(inflow),
+            }
+        )
     return sectors
 
 

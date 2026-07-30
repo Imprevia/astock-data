@@ -468,6 +468,10 @@ def test_sector_fund_flow_history_normal(monkeypatch, tmp_path):
     assert isinstance(result, SectorFundFlowHistoryResult)
     assert set(result.history_by_code.keys()) == {"BK0447", "BK0733"}
     assert len(result.history_by_code["BK0447"]) == 5
+    assert result.five_day_main_net_inflow_by_code == {
+        "BK0447": 5e8,
+        "BK0733": 5e8,
+    }
 
 
 def test_sector_fund_flow_history_partial_failure(monkeypatch, tmp_path):

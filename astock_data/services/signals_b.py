@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import re
+import sqlite3
 import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -19,6 +20,7 @@ from astock_data.clients.eastmoney import (
     PUSH2_FFLOW_KLINE_PATH,
 )
 from astock_data.config import AStockSettings, get_settings
+from astock_data.errors import DataSourceError
 from astock_data.models import (
     ConceptBlock,
     ConceptBlocksResult,
@@ -783,17 +785,21 @@ def get_sector_fund_flow_history(
     target_date = _target_trade_date(curr_date)
     cache = _structured_cache(settings)
     hour_key = f"{target_date}-{dt.datetime.now().hour:02d}"
+    f164_eligible = days == 5 and target_date == dt.date.today().isoformat()
 
     request_gate = threading.Lock()
     stop_event = threading.Event()
     ths_fallback_codes: set[str] = set()
     push2his_codes: set[str] = set()
+    history_cache_codes: set[str] = set()
 
     def pull_one(code: str) -> tuple[str, list[dict[str, Any]]]:
         secid = f"90.{code.lower()}"
         with request_gate:
-            if stop_event.is_set():
+            if stop_event.is_set() and not f164_eligible:
                 cached = _read_history_cache(cache, code, hour_key, target_date)
+                if cached:
+                    history_cache_codes.add(code)
                 return code, cached or []
             eastmoney_succeeded = True
             try:
@@ -812,7 +818,12 @@ def get_sector_fund_flow_history(
             except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
                 eastmoney_succeeded = False
                 values = []
-            if values:
+            has_valid_daily_flow = any(
+                isinstance(row.get("main_net_inflow"), (int, float))
+                and not isinstance(row.get("main_net_inflow"), bool)
+                for row in values
+            )
+            if has_valid_daily_flow:
                 push2his_codes.add(code)
                 try:
                     cache.write_general(
@@ -843,9 +854,11 @@ def get_sector_fund_flow_history(
                 if ths_values:
                     ths_fallback_codes.add(code)
                     return code, ths_values
-            if not eastmoney_succeeded:
+            if not eastmoney_succeeded and not f164_eligible:
                 stop_event.set()
             cached = _read_history_cache(cache, code, hour_key, target_date)
+            if cached:
+                history_cache_codes.add(code)
             return code, cached or []
 
     histories: dict[str, list[dict[str, Any]]] = {code: [] for code in codes}
@@ -858,23 +871,119 @@ def get_sector_fund_flow_history(
             except Exception:  # noqa: BLE001 - per-code failure degrades to empty
                 stop_event.set()
                 cached = _read_history_cache(cache, code, hour_key, target_date)
+                if cached:
+                    history_cache_codes.add(code)
                 histories[code] = cached or []
+
+    five_day_totals: dict[str, float] = {}
+    if days == 5:
+        for code in push2his_codes:
+            daily_values = [
+                row.get("main_net_inflow")
+                for row in histories[code]
+                if isinstance(row.get("main_net_inflow"), (int, float))
+                and not isinstance(row.get("main_net_inflow"), bool)
+            ]
+            if daily_values:
+                five_day_totals[code] = float(sum(daily_values))
+
+    missing_push2his_codes = [code for code in codes if code not in push2his_codes]
+    f164_cache_hit = False
+    f164_cache_write_failed = False
+    if (
+        f164_eligible
+        and missing_push2his_codes
+    ):
+        bulk_values: dict[str, float] = {}
+        try:
+            cached_f164 = cache.read_general(
+                "sector_f164",
+                "industry-five-day",
+                target_date,
+            )
+        except (sqlite3.Error, TypeError, ValueError):
+            cached_f164 = None
+        cached_values = (
+            cached_f164.get("values")
+            if isinstance(cached_f164, Mapping)
+            else None
+        )
+        if isinstance(cached_values, Mapping):
+            bulk_values = {
+                code: float(value)
+                for code, value in cached_values.items()
+                if isinstance(code, str)
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            }
+            f164_cache_hit = bool(bulk_values)
+
+        if not bulk_values:
+            try:
+                bulk_rows = _em.fetch_sector_five_day_main_net_inflow(client=client)
+            except DataSourceError:
+                bulk_rows = []
+            bulk_values = {
+                row["code"]: float(row["five_day_main_net_inflow"])
+                for row in bulk_rows
+                if isinstance(row.get("code"), str)
+                and isinstance(row.get("five_day_main_net_inflow"), (int, float))
+                and not isinstance(row.get("five_day_main_net_inflow"), bool)
+            }
+            if bulk_values:
+                try:
+                    cache.write_general(
+                        "sector_f164",
+                        "industry-five-day",
+                        target_date,
+                        {"values": bulk_values},
+                    )
+                except (sqlite3.Error, TypeError, ValueError):
+                    f164_cache_write_failed = True
+
+        five_day_totals.update(
+            {
+                code: bulk_values[code]
+                for code in missing_push2his_codes
+                if code in bulk_values
+            }
+        )
+
     warnings = []
     if push2his_codes:
         warnings.append(
             f"push2his daily fund-flow history used for {len(push2his_codes)} sectors."
         )
+    if f164_cache_hit:
+        warnings.append("f164 exact-date cache used for five-day sector aggregates.")
+    if f164_cache_write_failed:
+        warnings.append("f164 cache write unavailable; current result was not cached.")
     for code in codes:
-        if code in ths_fallback_codes:
+        has_f164 = code in five_day_totals and code not in push2his_codes
+        if has_f164 and code in ths_fallback_codes:
             warnings.append(
-                f"{code}: push2his unavailable; switched to THS industry daily K-line. "
-                "Amount is provided instead of main net inflow."
+                f"{code}: THS market bars retained; f164 five-day aggregate only; "
+                "daily fund-flow history unavailable."
             )
+        elif has_f164:
+            warnings.append(
+                f"{code}: f164 five-day aggregate only; daily fund-flow history unavailable."
+            )
+        elif code in ths_fallback_codes:
+            warnings.append(
+                f"{code}: THS market bars only; daily main-net-inflow and "
+                "five-day aggregate unavailable."
+            )
+        elif code in history_cache_codes:
+            warnings.append(f"{code}: cached daily fund-flow history used.")
+        elif code not in push2his_codes:
+            warnings.append(f"{code}: daily fund-flow history and five-day aggregate unavailable.")
 
     return SectorFundFlowHistoryResult(
         date=target_date,
         days=days,
         history_by_code=histories,
+        five_day_main_net_inflow_by_code=five_day_totals,
         warnings=warnings,
     )
 

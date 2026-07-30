@@ -123,6 +123,7 @@ class SectorFundFlowHistoryResult(BaseModel):
     date: str
     days: int
     history_by_code: dict[str, list[dict]]
+    five_day_main_net_inflow_by_code: dict[str, float] = Field(default_factory=dict)
     warnings: list[str] = []
 
 

@@ -19,6 +19,22 @@ python scripts/check_docs_contract.py --mode fast
 python scripts/check_docs_contract.py --mode full
 ```
 
+行业五日资金变更的离线定向验证：
+
+```powershell
+python -m pytest tests/test_sector_f164_client.py tests/test_sector_f164_service.py tests/test_sector_f164_cache_warnings.py tests/test_sector_f164_contract.py -q
+```
+
+显式允许真实网络后，可对本地当天执行短窗口 smoke；`--no-cache` 避免污染日常缓存：
+
+```powershell
+$env:ASTOCK_LIVE_TESTS=1
+$today = (Get-Date).ToString("yyyy-MM-dd")
+python -m astock_data.cli sector-fund-flow-history BK1036 --curr-date $today --days 5 --format json --no-cache
+```
+
+输出中的 `history_by_code` 只表示逐日记录；`five_day_main_net_inflow_by_code` 可包含 push2his 求和或 f164-only 累计。外部网络或上游风控阻断时，记录 stderr、warning 和退出状态，不把 smoke 标为通过。
+
 ## Hook Lifecycle
 
 - `pre-commit` 调用 `--mode fast`，只检查必需路径、active plan 非空字段和 docs 相对链接，不读取尚未产生的新提交消息。

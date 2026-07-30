@@ -87,10 +87,10 @@ def test_readme_data_source_contracts_are_structured():
     assert "ETF日K主源" not in source_by_name["腾讯财经"]
     assert fallback_by_endpoint["etf-daily"] == ["新浪K线", "东财push2his", "—", "—"]
     assert fallback_by_endpoint["sector-fund-flow-history"] == [
-        "东财push2his",
+        "东财push2his逐日资金",
+        "东财f164当前五日累计",
         "同花顺行业日K",
         "SQLite缓存",
-        "—",
     ]
     assert fallback_by_endpoint["market-breadth 指数"] == [
         "腾讯",

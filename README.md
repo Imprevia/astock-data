@@ -166,7 +166,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 |---|---|---|
 | mootdx | TCP 7709 | OHLCV K 线、财务快照、F10 文本、股票名称映射 |
 | 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级 |
-| 东方财富 | HTTP datacenter、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
+| 东方财富 | HTTP datacenter、dataapi、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
 | 新浪财经 | HTTP | K 线历史、财报三表、个股新闻兜底、市场广度二级兜底、指数K线降级、ETF K线降级 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材、行业K线降级 |
 | 财联社 cls.cn | HTTP | 全球财经快讯 |
@@ -186,10 +186,12 @@ opencode/Claude Code 风格 MCP 配置片段：
 | index-kline | 东财push2his | 新浪K线 | mootdx | — |
 | stock-amount | 东财push2his | 腾讯quote | — | — |
 | etf-daily | 新浪K线 | 东财push2his | — | — |
-| sector-fund-flow-history | 东财push2his | 同花顺行业日K | SQLite缓存 | — |
+| sector-fund-flow-history | 东财push2his逐日资金 | 东财f164当前五日累计 | 同花顺行业日K | SQLite缓存 |
 | sector-strength | 东财push2 clist | SQLite缓存 | — | — |
 
-`sector-fund-flow-history` 的同花顺降级只提供行业日 K 的 `date`、`close`、`amount`、`pct_change` 字段，不代表逐日主力净流入。
+`sector-fund-flow-history` 的 `history_by_code` 始终保留真实逐日记录。有效 push2his 资金序列必须在日期过滤后至少包含一个非布尔 `int`/`float` 类型的 `main_net_inflow`；仅有空值、字符串或布尔值的 dated rows 不会阻止降级，也不会作为资金历史对外返回。仅当 `days == 5`、目标日期等于本地当天且至少一个板块缺少有效 push2his 序列时，服务才会通过一次 `getbkzj` 批量请求读取官方行业范围 `m:90+s:4` 的 `f164`，并把元单位累计值写入独立的 `five_day_main_net_inflow_by_code`；该 eligible 路径仍逐板块尝试 push2his，不会因较早板块失败而把未请求板块直接交给 f164。它不会据此伪造五条日记录。历史日期、周末回看上一交易日和非五日请求均不会使用无日期参数的 f164。
+
+同花顺降级只提供行业日 K 的 `date`、`close`、`amount`、`pct_change` 字段，不代表逐日主力净流入，也不会生成五日资金累计。成功的 f164 批量映射按目标日期精确缓存供同日复用，不读取其他日期作为回退；warnings 会区分 push2his、f164-only、THS 行情、缓存和完全缺失。
 
 ## 缓存与限流配置
 
@@ -202,7 +204,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 | `ASTOCK_USER_AGENT_POOL` | 可选自定义 UA 池，JSON 数组，默认使用内置桌面 UA |
 | `ASTOCK_LIVE_TESTS` | 设为 `1` 时启用 live smoke 测试 |
 
-缓存策略：K 线使用 CSV 缓存，结构化数据使用 SQLite JSON 缓存。`--no-cache` 会把本次 CLI 调用重定向到临时缓存目录，不污染真实缓存。
+缓存策略：K 线使用 CSV 缓存，结构化数据使用 SQLite JSON 缓存。行业 f164 五日累计使用目标日期参与键构造并只做精确日期读取，不允许跨日期回退。`--no-cache` 会把本次 CLI 调用重定向到临时缓存目录，不污染真实缓存。
 
 ### Ticker 代码支持
 
