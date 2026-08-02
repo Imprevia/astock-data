@@ -174,6 +174,70 @@ def test_tencent_failure_uses_sina_indices(monkeypatch) -> None:
     assert result.raw["sources"]["limit_stats"] == "sina"
 
 
+def test_market_amount_snapshot_is_summed_only_for_matching_target_date() -> None:
+    class FakeTencent:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {
+                key: {"name": key, "price": 1000.0, "change": 1.0, "change_pct": 0.1}
+                for key in ["sh", "sz", "cyb", "kc50", "hs300", "zz500"]
+            }
+
+    class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+
+        def market_all(self) -> list[dict]:
+            return [
+                {"code": "000001", "name": "平安银行", "close": 10.0, "change_pct": 0.0, "amount": 100.0},
+                {"code": "600000", "name": "浦发银行", "close": 11.0, "change_pct": 0.0, "amount": 250.0},
+                {"code": "300001", "name": "特锐德", "close": 12.0, "change_pct": 0.0, "amount": None},
+            ]
+
+        def index_kline(self, symbol: str, datalen: int = 1) -> list[dict]:
+            assert symbol == "sh000001"
+            return [{"date": "2026-06-17"}]
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FailingEastmoney([]),
+        tencent=FakeTencent(),
+        sina=FakeSina(),
+        stock_data_func=lambda *args: _bars(args[0], []),
+    )
+
+    assert result.raw["market_amount"] == {
+        "amount": 350.0,
+        "date": "2026-06-17",
+        "row_count": 2,
+        "source": "sina.market_all",
+    }
+
+
+def test_market_amount_snapshot_is_rejected_when_snapshot_date_mismatches() -> None:
+    class FakeSina:
+        def index_snapshots(self) -> dict[str, dict]:
+            return {}
+
+        def market_all(self) -> list[dict]:
+            return [
+                {"code": "000001", "name": "平安银行", "close": 10.0, "change_pct": 0.0, "amount": 100.0}
+            ]
+
+        def index_kline(self, symbol: str, datalen: int = 1) -> list[dict]:
+            return [{"date": "2026-06-18"}]
+
+    result = get_market_breadth(
+        "2026-06-17",
+        eastmoney=FakeEastmoney([]),
+        tencent=EmptyTencent(),
+        sina=FakeSina(),
+        stock_data_func=lambda *args: _bars(args[0], []),
+    )
+
+    assert result.raw["market_amount"] is None
+    assert any("market amount snapshot date" in warning for warning in result.warnings)
+
+
 def test_partial_result_skips_board_ladders_when_rows_fail(monkeypatch) -> None:
     class FakeTencent:
         def index_snapshots(self) -> dict[str, dict]:

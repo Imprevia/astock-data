@@ -35,6 +35,25 @@ python -m astock_data.cli sector-fund-flow-history BK1036 --curr-date $today --d
 
 输出中的 `history_by_code` 只表示逐日记录；`five_day_main_net_inflow_by_code` 可包含 push2his 求和或 f164-only 累计。外部网络或上游风控阻断时，记录 stderr、warning 和退出状态，不把 smoke 标为通过。
 
+周末复盘最新交易日时，可用 Python API 的 `aggregate_only=True` 跳过逐板块历史请求。只有新浪上证指数最新K线日期与 `curr_date` 完全一致时才返回 f164 累计；日期不匹配或不可校验应保持空值和 warning。普通模式优先读取同日真实资金缓存，再降级到仅含行情字段的 THS 日K。
+
+历史全局快讯 smoke：
+
+```powershell
+python -m astock_data.cli global-news --curr-date 2026-07-31 --look-back-days 1 --limit 15 --format json --no-cache
+```
+
+所有返回项的 `time` 必须落在 2026-07-31；若供应商档案未覆盖目标日，应返回空 `items` 和 warning，不能返回当前实时新闻。
+
+代表性行业 ETF 扩展的离线与真实行情验证：
+
+```powershell
+python -m pytest tests/test_public_api.py -q
+python -m astock_data.cli etf-daily 515230 512720 512980 515880 562500 515260 518880 159869 516020 159825 --days 5 --format json
+```
+
+所有白名单代码应返回对应沪深市场前缀的行情；下游只能把近日涨跌幅作为行业活跃度代理，不得改称 ETF 份额净流入。
+
 ## Hook Lifecycle
 
 - `pre-commit` 调用 `--mode fast`，只检查必需路径、active plan 非空字段和 docs 相对链接，不读取尚未产生的新提交消息。

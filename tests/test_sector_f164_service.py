@@ -17,6 +17,15 @@ def _client() -> EastmoneyClient:
     return EastmoneyClient(min_interval=0.0, timeout=5.0)
 
 
+@pytest.fixture(autouse=True)
+def _verify_today_as_latest_trade_date(monkeypatch) -> None:
+    monkeypatch.setattr(
+        signals_b,
+        "_latest_sina_index_trade_date",
+        lambda: dt.date.today().isoformat(),
+    )
+
+
 def test_current_five_day_missing_history_loads_one_shared_bulk_fallback(
     monkeypatch,
     tmp_path,
@@ -158,4 +167,106 @@ def test_past_target_date_does_not_load_bulk_fallback(
 
     # Then
     assert result.date == past_date
+
+
+def test_verified_latest_historical_trade_date_loads_bulk_fallback(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    target_date = "2026-07-31"
+    monkeypatch.setattr(signals_b, "_latest_sina_index_trade_date", lambda: target_date)
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_fund_flow_history",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_five_day_main_net_inflow",
+        lambda **kwargs: [
+            {
+                "code": "BK9000",
+                "name": "行业",
+                "five_day_main_net_inflow": 12.0,
+            }
+        ],
+    )
+
+    result = get_sector_fund_flow_history(
+        ["BK9000"],
+        target_date,
+        days=5,
+        eastmoney=_client(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
+
+    assert result.five_day_main_net_inflow_by_code == {"BK9000": 12.0}
+
+
+def test_unverifiable_latest_trade_date_rejects_bulk_fallback(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    target_date = "2026-07-31"
+    monkeypatch.setattr(signals_b, "_latest_sina_index_trade_date", lambda: None)
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_fund_flow_history",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(signals_b, "_fetch_ths_industry_kline", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_five_day_main_net_inflow",
+        lambda **kwargs: pytest.fail("unverified f164 must not be loaded"),
+    )
+
+    result = get_sector_fund_flow_history(
+        ["BK9000"],
+        target_date,
+        days=5,
+        eastmoney=_client(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
+
+    assert result.five_day_main_net_inflow_by_code == {}
+    assert any("unverifiable" in warning for warning in result.warnings)
+
+
+def test_aggregate_only_mode_skips_per_sector_history_requests(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    target_date = "2026-07-31"
+    monkeypatch.setattr(signals_b, "_latest_sina_index_trade_date", lambda: target_date)
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_fund_flow_history",
+        lambda *args, **kwargs: pytest.fail("aggregate-only mode must skip push2his"),
+    )
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_five_day_main_net_inflow",
+        lambda **kwargs: [
+            {
+                "code": "BK9000",
+                "name": "行业",
+                "five_day_main_net_inflow": 12.0,
+            }
+        ],
+    )
+
+    result = get_sector_fund_flow_history(
+        ["BK9000"],
+        target_date,
+        days=5,
+        aggregate_only=True,
+        eastmoney=_client(),
+        settings=AStockSettings(cache_dir=tmp_path),
+    )
+
+    assert result.history_by_code == {"BK9000": []}
+    assert result.five_day_main_net_inflow_by_code == {"BK9000": 12.0}
+    assert any("aggregate-only" in warning for warning in result.warnings)
 

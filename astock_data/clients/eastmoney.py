@@ -435,14 +435,17 @@ class EastmoneyClient:
     # ------------------------------------------------------------------
     # Helper: 7x24 global fast news (np-weblist)
     # ------------------------------------------------------------------
-    def fast_news(self, limit: int = 20) -> list[dict]:
-        """Fetch the Eastmoney 7x24 fast-news feed (np-weblist)."""
-
+    def fast_news_page(
+        self,
+        limit: int = 20,
+        sort_end: str = "",
+    ) -> tuple[list[dict], str]:
+        """Fetch one 7x24 page and return rows plus the vendor cursor."""
         params = {
             "client": "web",
             "biz": "web_724",
             "fastColumn": "102",
-            "sortEnd": "",
+            "sortEnd": sort_end,
             "pageSize": str(limit),
             "req_trace": str(time.time_ns()),
         }
@@ -454,9 +457,14 @@ class EastmoneyClient:
             if isinstance(container, Mapping)
             else []
         )
+        next_cursor = (
+            str(container.get("sortEnd", "") or "")
+            if isinstance(container, Mapping)
+            else ""
+        )
         news: list[dict] = []
         if not isinstance(items, list):
-            return news
+            return news, next_cursor
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -469,7 +477,13 @@ class EastmoneyClient:
                     "source": "Eastmoney Global",
                 }
             )
-        return news
+        return news, next_cursor
+
+    def fast_news(self, limit: int = 20) -> list[dict]:
+        """Fetch the newest Eastmoney 7x24 fast-news rows."""
+
+        rows, _cursor = self.fast_news_page(limit=limit)
+        return rows
 
     # ------------------------------------------------------------------
     # Helper: concept/sector blocks for a stock (slist, migrated from Baidu PAE)

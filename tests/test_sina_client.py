@@ -203,8 +203,24 @@ def test_market_page_normalizes_rows(requests_mocker) -> None:
         captured["qs"] = request.qs
         return json.dumps(
             [
-                {"symbol": "sh600000", "name": "浦发银行", "trade": "10.1", "changepercent": "9.9"},
-                {"code": "sz300001", "name": "特锐德", "price": "12.0", "change_pct": "20.0"},
+                {
+                    "symbol": "sh600000",
+                    "name": "浦发银行",
+                    "trade": "10.1",
+                    "changepercent": "9.9",
+                    "volume": 1000,
+                    "amount": 10100,
+                    "ticktime": "15:00:01",
+                },
+                {
+                    "code": "sz300001",
+                    "name": "特锐德",
+                    "price": "12.0",
+                    "change_pct": "20.0",
+                    "volume": "2000",
+                    "amount": "24000",
+                    "ticktime": "15:00:02",
+                },
             ],
             ensure_ascii=False,
         )
@@ -216,8 +232,24 @@ def test_market_page_normalizes_rows(requests_mocker) -> None:
     assert captured["qs"]["page"] == ["2"]
     assert captured["qs"]["num"] == ["2"]
     assert rows == [
-        {"code": "600000", "name": "浦发银行", "close": 10.1, "change_pct": 9.9},
-        {"code": "300001", "name": "特锐德", "close": 12.0, "change_pct": 20.0},
+        {
+            "code": "600000",
+            "name": "浦发银行",
+            "close": 10.1,
+            "change_pct": 9.9,
+            "volume": 1000.0,
+            "amount": 10100.0,
+            "ticktime": "15:00:01",
+        },
+        {
+            "code": "300001",
+            "name": "特锐德",
+            "close": 12.0,
+            "change_pct": 20.0,
+            "volume": 2000.0,
+            "amount": 24000.0,
+            "ticktime": "15:00:02",
+        },
     ]
 
 

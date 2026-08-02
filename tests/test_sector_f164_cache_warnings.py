@@ -26,6 +26,15 @@ def _settings(tmp_path) -> AStockSettings:
     return AStockSettings(cache_dir=tmp_path)
 
 
+@pytest.fixture(autouse=True)
+def _verify_today_as_latest_trade_date(monkeypatch) -> None:
+    monkeypatch.setattr(
+        signals_b,
+        "_latest_sina_index_trade_date",
+        lambda: dt.date.today().isoformat(),
+    )
+
+
 def test_push2his_five_day_rows_populate_real_sum(monkeypatch, tmp_path) -> None:
     # Given
     today = dt.date.today()
@@ -99,6 +108,48 @@ def test_ths_market_bars_never_create_fund_flow_values(monkeypatch, tmp_path) ->
     assert result.five_day_main_net_inflow_by_code == {}
     assert len(result.warnings) == 1
     assert "THS" in result.warnings[0]
+
+
+def test_cached_daily_fund_flow_is_preferred_over_ths_market_bars(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    today = dt.date.today().isoformat()
+    hour_key = f"{today}-{dt.datetime.now().hour:02d}"
+    cached_rows = [{"date": today, "main_net_inflow": 6.0}]
+    SQLiteStructuredCache(tmp_path).write_general(
+        "sector_history",
+        f"BK1036:{hour_key}",
+        today,
+        {"values": cached_rows},
+    )
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_fund_flow_history",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        eastmoney_module,
+        "fetch_sector_five_day_main_net_inflow",
+        lambda **kwargs: [],
+    )
+    monkeypatch.setattr(
+        signals_b,
+        "_fetch_ths_industry_kline",
+        lambda *args, **kwargs: pytest.fail("fund-flow cache must precede THS bars"),
+    )
+
+    result = get_sector_fund_flow_history(
+        ["BK1036"],
+        today,
+        days=5,
+        eastmoney=_client(),
+        settings=_settings(tmp_path),
+    )
+
+    assert result.history_by_code["BK1036"] == cached_rows
+    assert result.five_day_main_net_inflow_by_code == {}
+    assert result.warnings == ["BK1036: cached daily fund-flow history used."]
 
 
 def test_same_date_f164_cache_is_reused_without_upstream_call(

@@ -8,7 +8,10 @@
 - Enforcement: stdlib-only docs-contract core/checker, lifecycle contract tests, three thin hooks, and the idempotent installer are implemented.
 - Hook connection: repository-local `core.hooksPath` is `.githooks`.
 - CI: none configured.
-- Sector fund flow: push2his remains the daily source; the current-date five-day f164 aggregate fallback, exact-date cache, separated result field, and THS semantic guard are implemented.
+- Sector fund flow: push2his remains the daily source; independently date-verified latest-session f164 aggregates, aggregate-only retrieval, exact-date cache, cache-before-THS ordering, and the THS semantic guard are implemented.
+- Sector ETF coverage: ten representative software/computer/media/communication/robot/electronics/gold/gaming/chemical/agriculture ETFs are added to the allowlist; the 2026-07-31 downstream mapping covers 82 of 89 sector rows.
+- ETF expansion verification: 91 focused API/CLI/MCP/docs tests passed; the final full suite passed 525 tests with 7 skips in 128.60 seconds; the full docs contract passed.
+- Global news: dated requests paginate the Eastmoney 7x24 archive with the vendor cursor and reject out-of-window live rows and legacy polluted cache entries.
 
 ## Evidence
 
@@ -46,6 +49,11 @@
 - Final invalid-row remediation: the regression first failed with three invalid rows in public history, then all 3 Oracle tests and 24 focused f164 tests passed after invalid-only rows continued to THS/cache instead of being returned.
 - Final invalid-row verification: 167 broader targeted tests passed, the full suite passed 513 tests with 7 skips in 116.45 seconds, and docs-contract full mode passed.
 - Final invalid-row live evidence: invalid-only input produced empty history plus a real 26,221,969,152 yuan f164 aggregate; the prior-date guard produced no aggregate.
+- Historical review retrieval focused suite passed 67 news/client tests; full regression passed 518 tests with 7 skips after redirecting pytest's blocked system temp directory to a writable workspace-owned path.
+- Historical news live smoke returned 15 correctly dated 2026-07-31 items through Eastmoney cursor pagination; downstream sector and money-flow smokes restored outflow rankings and five-day ratios.
+- Latest-session sector recovery live evidence: Sina verified `2026-07-31`, f164 returned 128 industry aggregates, and the enhanced review completed in about 61 seconds. Top30 retained eight detailed histories from live/cache and recovered eight additional five-day aggregates without inventing positive-day counts.
+- Market amount live evidence: the date-verified Sina market snapshot summed 2.5591 trillion yuan across 5,527 positive-amount stock rows for 2026-07-31; the index-K-line series remains separately labeled as a trend proxy.
+- Final retrieval regression: 524 tests passed with 7 skips in 134.08 seconds; `python scripts/check_docs_contract.py --mode full` passed.
 
 ## Remaining Gaps
 
@@ -54,3 +62,4 @@
 - Changes remain uncommitted by request; the pre-existing untracked `astock_data.zip` was not modified.
 - `basedpyright` remains unavailable by prior decision. The no-excuse audit found no newly introduced violation after cache-write warning cleanup; inherited findings and all changed-file LOC values are recorded in the active sector f164 plan.
 - The f164 plan and active index now agree that implementation is complete and awaiting archive.
+- Fine-grained industries absent from the official f164 industry universe still depend on push2his or a prior valid cache; no parent-industry value is substituted.

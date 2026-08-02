@@ -88,9 +88,9 @@ def test_readme_data_source_contracts_are_structured():
     assert fallback_by_endpoint["etf-daily"] == ["新浪K线", "东财push2his", "—", "—"]
     assert fallback_by_endpoint["sector-fund-flow-history"] == [
         "东财push2his逐日资金",
-        "东财f164当前五日累计",
+        "日期校验后的东财f164最新交易日五日累计",
+        "SQLite资金缓存",
         "同花顺行业日K",
-        "SQLite缓存",
     ]
     assert fallback_by_endpoint["market-breadth 指数"] == [
         "腾讯",

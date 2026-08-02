@@ -541,6 +541,39 @@ def test_etf_daily_uses_sina_history_and_preserves_missing_amount(monkeypatch):
     assert "新浪K线作为ETF数据主源" in result.warnings
 
 
+def test_etf_daily_supports_expanded_representative_industry_codes(monkeypatch):
+    expected_symbols = {
+        "515230": "sh515230",
+        "512720": "sh512720",
+        "512980": "sh512980",
+        "515880": "sh515880",
+        "562500": "sh562500",
+        "515260": "sh515260",
+        "518880": "sh518880",
+        "159869": "sz159869",
+        "516020": "sh516020",
+        "159825": "sz159825",
+    }
+    calls = []
+
+    def _sina_kline(self, symbol, datalen):
+        calls.append((symbol, datalen))
+        return [{"date": "2026-07-31", "close": 1.0, "volume": 1.0}]
+
+    monkeypatch.setattr(
+        "astock_data.clients.sina.SinaClient.index_kline",
+        _sina_kline,
+    )
+
+    from astock_data.api import get_etf_daily
+
+    result = get_etf_daily(list(expected_symbols), days=5)
+
+    assert calls == [(symbol, 5) for symbol in expected_symbols.values()]
+    assert all(result.bars_by_code[code] for code in expected_symbols)
+    assert not any("未支持" in warning for warning in result.warnings)
+
+
 def test_etf_daily_falls_back_to_eastmoney_after_sina_failure(monkeypatch):
     eastmoney_calls = []
 

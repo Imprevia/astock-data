@@ -173,6 +173,8 @@ opencode/Claude Code 风格 MCP 配置片段：
 
 东方财富请求统一经过线程安全限流入口，默认最小间隔 1 秒并带随机抖动，同时启用 UA 随机化及 429/503 自动重试（读取 `Retry-After`），减少批量请求触发风控的概率。腾讯财经请求带 `Referer` 并启用 UA 随机化；新浪财经 K 线和财报请求带 `Referer`，并启用 UA 随机化及 429/503 重试。概念板块数据已从下线的百度 PAE 迁移至东方财富 `slist`。
 
+`get_global_news(curr_date, look_back_days, limit)` 会使用东方财富 7×24 接口返回的 `sortEnd` 游标向历史翻页，并严格过滤到请求的日期窗口。旧版缓存中缺少窗口元数据或日期越界的实时新闻不会作为历史事实返回；公开快讯档案未覆盖目标日期时返回空列表和明确 warning。
+
 `get_market_breadth()` 按能力降级：指数快照依次尝试腾讯、新浪、东方财富；涨跌停家数依次尝试新浪分页、东方财富全市场行情。返回结果的 `raw.sources` 会记录 `indices`、`limit_stats`、`board_ladders` 的实际来源；如果只能返回部分结果，`warnings` 会说明失败来源、fallback 来源或连板推导跳过原因。新浪分页属于低频路径，重复调用可能触发上游临时限流。
 
 ### 数据获取降级链
@@ -186,12 +188,14 @@ opencode/Claude Code 风格 MCP 配置片段：
 | index-kline | 东财push2his | 新浪K线 | mootdx | — |
 | stock-amount | 东财push2his | 腾讯quote | — | — |
 | etf-daily | 新浪K线 | 东财push2his | — | — |
-| sector-fund-flow-history | 东财push2his逐日资金 | 东财f164当前五日累计 | 同花顺行业日K | SQLite缓存 |
+| sector-fund-flow-history | 东财push2his逐日资金 | 日期校验后的东财f164最新交易日五日累计 | SQLite资金缓存 | 同花顺行业日K |
 | sector-strength | 东财push2 clist | SQLite缓存 | — | — |
 
-`sector-fund-flow-history` 的 `history_by_code` 始终保留真实逐日记录。有效 push2his 资金序列必须在日期过滤后至少包含一个非布尔 `int`/`float` 类型的 `main_net_inflow`；仅有空值、字符串或布尔值的 dated rows 不会阻止降级，也不会作为资金历史对外返回。仅当 `days == 5`、目标日期等于本地当天且至少一个板块缺少有效 push2his 序列时，服务才会通过一次 `getbkzj` 批量请求读取官方行业范围 `m:90+s:4` 的 `f164`，并把元单位累计值写入独立的 `five_day_main_net_inflow_by_code`；该 eligible 路径仍逐板块尝试 push2his，不会因较早板块失败而把未请求板块直接交给 f164。它不会据此伪造五条日记录。历史日期、周末回看上一交易日和非五日请求均不会使用无日期参数的 f164。
+`etf-daily` 的行业 ETF 白名单覆盖 broad-market 既有代码，并新增软件 `515230`、计算机 `512720`、传媒 `512980`、通信 `515880`、机器人 `562500`、电子 `515260`、黄金 `518880`、游戏 `159869`、化工 `516020`、农业 `159825`。这些代码供下游做代表性行业行情代理，不表达精确 ETF 份额流入。
 
-同花顺降级只提供行业日 K 的 `date`、`close`、`amount`、`pct_change` 字段，不代表逐日主力净流入，也不会生成五日资金累计。成功的 f164 批量映射按目标日期精确缓存供同日复用，不读取其他日期作为回退；warnings 会区分 push2his、f164-only、THS 行情、缓存和完全缺失。
+`sector-fund-flow-history` 的 `history_by_code` 始终保留真实逐日记录。有效 push2his 资金序列必须在日期过滤后至少包含一个非布尔 `int`/`float` 类型的 `main_net_inflow`；仅有空值、字符串或布尔值的 dated rows 不会阻止降级，也不会作为资金历史对外返回。仅当 `days == 5` 且新浪上证指数最新K线日期与目标日期完全一致时，服务才会通过一次 `getbkzj` 批量请求读取官方行业范围 `m:90+s:4` 的 `f164`，并把元单位累计值写入独立的 `five_day_main_net_inflow_by_code`。日期不匹配或不可校验时禁用 f164，避免把无日期参数的当前值错配给历史日期。`aggregate_only=True` 可跳过逐板块 push2his，只获取这份已校验的批量累计；它不会据此伪造五条日记录或正流入天数。
+
+同花顺降级只提供行业日 K 的 `date`、`close`、`amount`、`pct_change` 字段，不代表逐日主力净流入，也不会生成五日资金累计。回退顺序优先使用同日真实资金缓存，再考虑 THS 行情。成功的 f164 批量映射按目标日期精确缓存供同日复用，不读取其他日期作为回退；warnings 会区分 push2his、f164-only、THS 行情、缓存和完全缺失。
 
 ## 缓存与限流配置
 

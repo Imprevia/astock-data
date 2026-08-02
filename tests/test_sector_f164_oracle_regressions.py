@@ -18,6 +18,15 @@ def _client() -> EastmoneyClient:
     return EastmoneyClient(min_interval=0.0, timeout=5.0)
 
 
+@pytest.fixture(autouse=True)
+def _verify_today_as_latest_trade_date(monkeypatch) -> None:
+    monkeypatch.setattr(
+        signals_b,
+        "_latest_sina_index_trade_date",
+        lambda: dt.date.today().isoformat(),
+    )
+
+
 def test_invalid_push2his_rows_trigger_f164_without_claiming_daily_source(
     monkeypatch,
     tmp_path,

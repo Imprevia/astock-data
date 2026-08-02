@@ -79,6 +79,10 @@ def _row_close(row: Mapping[str, Any]) -> float | None:
     return _to_float(row.get("f2") if "f2" in row else row.get("close"))
 
 
+def _row_amount(row: Mapping[str, Any]) -> float | None:
+    return _to_float(row.get("f6") if "f6" in row else row.get("amount"))
+
+
 def _threshold(code: str, name: str) -> float:
     upper_name = name.upper()
     if "ST" in upper_name:
@@ -224,6 +228,47 @@ def _count_limits(rows: list[dict]) -> LimitStats:
     )
 
 
+def _verified_market_amount(
+    rows: list[dict],
+    row_source: str | None,
+    sina: SinaClient,
+    target: dt.date,
+    warnings: list[str],
+) -> dict[str, Any] | None:
+    amounts = [
+        amount
+        for row in rows
+        if (amount := _row_amount(row)) is not None and amount > 0
+    ]
+    if not amounts:
+        return None
+
+    try:
+        index_rows = sina.index_kline("sh000001", datalen=1)
+        snapshot_date = str(index_rows[-1].get("date") or "") if index_rows else ""
+    except Exception as exc:  # noqa: BLE001 - optional verified snapshot
+        warnings.append(f"market amount snapshot date verification failed: {exc}")
+        return None
+
+    if snapshot_date != target.isoformat():
+        warnings.append(
+            "market amount snapshot date "
+            f"{snapshot_date or 'unknown'} does not match target {target.isoformat()}"
+        )
+        return None
+
+    source = {
+        "sina": "sina.market_all",
+        "eastmoney": "eastmoney.clist_all",
+    }.get(row_source, str(row_source or "unknown"))
+    return {
+        "amount": sum(amounts),
+        "date": snapshot_date,
+        "row_count": len(amounts),
+        "source": source,
+    }
+
+
 def _collect_limit_down_rows(rows: list[dict]) -> list[LimitDownItem]:
     """Collect individual limit-down stocks (not just the count)."""
     items: list[LimitDownItem] = []
@@ -333,6 +378,14 @@ def get_market_breadth(
     if index_source is None and row_source is None:
         raise DataSourceError("All market breadth index and full-market quote sources failed")
 
+    market_amount = _verified_market_amount(
+        rows,
+        row_source,
+        sina_client,
+        target,
+        warnings,
+    )
+
     hot_reasons: Mapping[str, str] | None = None
     try:
         from astock_data.services.signals_a import get_hot_stocks as _get_hot_stocks
@@ -381,6 +434,7 @@ def get_market_breadth(
                 "board_ladders": board_source,
             },
             "limit_row_count": len(rows),
+            "market_amount": market_amount,
         },
     )
 

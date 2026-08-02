@@ -35,15 +35,18 @@ class FakeEastmoney:
         *,
         search_rows: list[dict] | None = None,
         fast_rows: list[dict] | None = None,
+        fast_pages: list[tuple[list[dict], str]] | None = None,
         search_error: Exception | None = None,
         fast_error: Exception | None = None,
     ) -> None:
         self._search_rows = search_rows if search_rows is not None else []
         self._fast_rows = fast_rows if fast_rows is not None else []
+        self._fast_pages = list(fast_pages or [])
         self._search_error = search_error
         self._fast_error = fast_error
         self.search_calls: list[str] = []
         self.fast_calls: list[int] = []
+        self.fast_page_calls: list[tuple[int, str]] = []
 
     def search_news(self, code: str, page_size: int = 20) -> list[dict]:
         self.search_calls.append(code)
@@ -56,6 +59,19 @@ class FakeEastmoney:
         if self._fast_error is not None:
             raise self._fast_error
         return list(self._fast_rows)
+
+    def fast_news_page(
+        self,
+        limit: int = 20,
+        sort_end: str = "",
+    ) -> tuple[list[dict], str]:
+        self.fast_page_calls.append((limit, sort_end))
+        if self._fast_error is not None:
+            raise self._fast_error
+        if self._fast_pages:
+            rows, cursor = self._fast_pages.pop(0)
+            return list(rows), cursor
+        return list(self._fast_rows), ""
 
 
 class FakeSina:
@@ -100,6 +116,24 @@ class _FakeResponse:
 
     def json(self) -> dict:
         return self._payload
+
+
+class FakeCache:
+    def __init__(self, payload: dict | None = None) -> None:
+        self.payload = payload
+        self.writes: list[tuple[str, str, str, dict]] = []
+
+    def read(self, kind: str, ticker: str, trade_date: str) -> dict | None:
+        return self.payload
+
+    def write(
+        self,
+        kind: str,
+        ticker: str,
+        trade_date: str,
+        payload: dict,
+    ) -> None:
+        self.writes.append((kind, ticker, trade_date, payload))
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +362,10 @@ class TestGetNewsShape:
 
 
 class TestGetGlobalNews:
+    @staticmethod
+    def _timestamp(value: str) -> int:
+        return int(dt.datetime.strptime(value, "%Y-%m-%d %H:%M").timestamp())
+
     def _cls_payload(self, items: list[dict]) -> dict:
         return {"data": {"roll_data": items}}
 
@@ -338,12 +376,12 @@ class TestGetGlobalNews:
                     {
                         "title": "Fed cuts rates",
                         "content": "c1",
-                        "ctime": 1718000000,
+                        "ctime": self._timestamp("2026-06-10 10:00"),
                     },
                     {
                         "title": "  fed cuts rates  ",  # stripped dup
                         "content": "c2",
-                        "ctime": 1718000100,
+                        "ctime": self._timestamp("2026-06-10 10:01"),
                     },
                 ]
             )
@@ -360,7 +398,7 @@ class TestGetGlobalNews:
     def test_merges_cls_and_eastmoney_then_dedupes(self) -> None:
         cls = FakeClsSession(
             self._cls_payload(
-                [{"title": "CLS only", "content": "x", "ctime": 1718000000}]
+                [{"title": "CLS only", "content": "x", "ctime": self._timestamp("2026-06-10 09:00")}]
             )
         )
         em = FakeEastmoney(
@@ -386,7 +424,7 @@ class TestGetGlobalNews:
     def test_dedupe_across_sources_strips_and_lowercases(self) -> None:
         cls = FakeClsSession(
             self._cls_payload(
-                [{"title": "  Same Story  ", "content": "cls", "ctime": 1718000000}]
+                [{"title": "  Same Story  ", "content": "cls", "ctime": self._timestamp("2026-06-10 09:00")}]
             )
         )
         em = FakeEastmoney(
@@ -408,7 +446,11 @@ class TestGetGlobalNews:
 
     def test_respects_limit_after_dedupe(self) -> None:
         rows = [
-            {"title": f"headline {i}", "content": "c", "ctime": 1718000000 + i}
+            {
+                "title": f"headline {i}",
+                "content": "c",
+                "ctime": self._timestamp("2026-06-10 09:00") + i,
+            }
             for i in range(8)
         ]
         cls = FakeClsSession(self._cls_payload(rows))
@@ -444,7 +486,7 @@ class TestGetGlobalNews:
     def test_cls_converts_ctime_to_time_string(self) -> None:
         cls = FakeClsSession(
             self._cls_payload(
-                [{"title": "ts", "content": "c", "ctime": 1718000000}]
+                [{"title": "ts", "content": "c", "ctime": self._timestamp("2026-06-10 09:00")}]
             )
         )
         em = FakeEastmoney(fast_rows=[])
@@ -459,7 +501,9 @@ class TestGetGlobalNews:
 
     def test_global_result_shape(self) -> None:
         cls = FakeClsSession(
-            self._cls_payload([{"title": "x", "content": "c", "ctime": 1718000000}])
+            self._cls_payload(
+                [{"title": "x", "content": "c", "ctime": self._timestamp("2026-06-10 09:00")}]
+            )
         )
         em = FakeEastmoney(fast_rows=[])
         result = get_global_news(
@@ -468,6 +512,134 @@ class TestGetGlobalNews:
         assert result.source == "cls+eastmoney"
         assert isinstance(result.retrieved_at, dt.datetime)
         assert all(hasattr(i, "title") for i in result.items)
+
+    def test_historical_request_paginates_until_target_window(self) -> None:
+        em = FakeEastmoney(
+            fast_pages=[
+                (
+                    [
+                        {
+                            "title": "too new",
+                            "time": "2026-08-02 10:00",
+                            "source": "Eastmoney Global",
+                        }
+                    ],
+                    "cursor-1",
+                ),
+                (
+                    [
+                        {
+                            "title": "target day",
+                            "time": "2026-07-31 15:00",
+                            "source": "Eastmoney Global",
+                        },
+                        {
+                            "title": "too old",
+                            "time": "2026-07-30 23:59",
+                            "source": "Eastmoney Global",
+                        },
+                    ],
+                    "cursor-2",
+                ),
+            ]
+        )
+
+        result = get_global_news(
+            "2026-07-31",
+            look_back_days=1,
+            limit=15,
+            eastmoney=em,
+            cls_session=FakeClsSession({"data": {"roll_data": []}}),
+        )
+
+        assert [item.title for item in result.items] == ["target day"]
+        assert em.fast_page_calls == [(100, ""), (100, "cursor-1")]
+
+    def test_historical_request_drops_out_of_window_live_rows(self) -> None:
+        em = FakeEastmoney(
+            fast_rows=[
+                {
+                    "title": "wrong day",
+                    "time": "2026-08-02 10:00",
+                    "source": "Eastmoney Global",
+                }
+            ]
+        )
+
+        result = get_global_news(
+            "2026-07-31",
+            look_back_days=1,
+            limit=15,
+            eastmoney=em,
+            cls_session=FakeClsSession({"data": {"roll_data": []}}),
+        )
+
+        assert result.items == []
+        assert any("requested news window" in warning for warning in result.warnings)
+
+    def test_legacy_wrong_date_cache_is_ignored_and_replaced(self) -> None:
+        cache = FakeCache(
+            {
+                "items": [
+                    {
+                        "title": "polluted cache",
+                        "time": "2026-08-02 10:00",
+                        "source": "Eastmoney Global",
+                    }
+                ]
+            }
+        )
+        em = FakeEastmoney(
+            fast_rows=[
+                {
+                    "title": "correct historical item",
+                    "time": "2026-07-31 10:00",
+                    "source": "Eastmoney Global",
+                }
+            ]
+        )
+
+        result = get_global_news(
+            "2026-07-31",
+            look_back_days=1,
+            limit=15,
+            eastmoney=em,
+            cls_session=FakeClsSession({"data": {"roll_data": []}}),
+            cache=cache,  # type: ignore[arg-type]
+        )
+
+        assert [item.title for item in result.items] == ["correct historical item"]
+        assert cache.writes[-1][3]["window_end"] == "2026-07-31"
+
+    def test_valid_window_cache_reads_iso_datetime(self) -> None:
+        cache = FakeCache(
+            {
+                "items": [
+                    {
+                        "title": "cached historical item",
+                        "time": "2026-07-31T10:00:00",
+                        "source": "Eastmoney Global",
+                    }
+                ],
+                "window_start": "2026-07-31",
+                "window_end": "2026-07-31",
+                "complete": True,
+                "limit": 15,
+                "warnings": [],
+            }
+        )
+        em = FakeEastmoney(fast_error=AssertionError("network must not be called"))
+
+        result = get_global_news(
+            "2026-07-31",
+            look_back_days=1,
+            limit=15,
+            eastmoney=em,
+            cache=cache,  # type: ignore[arg-type]
+        )
+
+        assert [item.title for item in result.items] == ["cached historical item"]
+        assert em.fast_page_calls == []
 
 
 # ---------------------------------------------------------------------------

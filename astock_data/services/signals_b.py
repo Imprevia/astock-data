@@ -19,6 +19,7 @@ from astock_data.clients.eastmoney import (
     PUSH2_CLIST_PATH,
     PUSH2_FFLOW_KLINE_PATH,
 )
+from astock_data.clients.sina import SinaClient
 from astock_data.config import AStockSettings, get_settings
 from astock_data.errors import DataSourceError
 from astock_data.models import (
@@ -766,6 +767,7 @@ def get_sector_fund_flow_history(
     curr_date: str = "",
     days: int = 5,
     *,
+    aggregate_only: bool = False,
     eastmoney: EastmoneyClient | None = None,
     settings: AStockSettings | None = None,
 ) -> SectorFundFlowHistoryResult:
@@ -785,9 +787,8 @@ def get_sector_fund_flow_history(
     target_date = _target_trade_date(curr_date)
     cache = _structured_cache(settings)
     hour_key = f"{target_date}-{dt.datetime.now().hour:02d}"
-    f164_eligible = days == 5 and target_date == dt.date.today().isoformat()
+    continue_after_error = days == 5 and target_date == dt.date.today().isoformat()
 
-    request_gate = threading.Lock()
     stop_event = threading.Event()
     ths_fallback_codes: set[str] = set()
     push2his_codes: set[str] = set()
@@ -795,85 +796,86 @@ def get_sector_fund_flow_history(
 
     def pull_one(code: str) -> tuple[str, list[dict[str, Any]]]:
         secid = f"90.{code.lower()}"
-        with request_gate:
-            if stop_event.is_set() and not f164_eligible:
-                cached = _read_history_cache(cache, code, hour_key, target_date)
-                if cached:
-                    history_cache_codes.add(code)
-                return code, cached or []
-            eastmoney_succeeded = True
-            try:
-                raw_values = _em.fetch_sector_fund_flow_history(
-                    secid,
-                    days=days,
-                    end_date=target_date,
-                    client=client,
-                )
-                values = [
-                    row
-                    for row in raw_values
-                    if isinstance(row.get("date"), str)
-                    and row["date"] <= target_date
-                ]
-            except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
-                eastmoney_succeeded = False
-                values = []
-            has_valid_daily_flow = any(
-                isinstance(row.get("main_net_inflow"), (int, float))
-                and not isinstance(row.get("main_net_inflow"), bool)
-                for row in values
-            )
-            if has_valid_daily_flow:
-                push2his_codes.add(code)
-                try:
-                    cache.write_general(
-                        "sector_history",
-                        f"{code}:{hour_key}",
-                        target_date,
-                        {"values": values},
-                    )
-                except Exception:  # noqa: BLE001 - cache write failure is non-fatal
-                    pass
-                return code, values
-            ths_code = _em_to_ths_code(code)
-            if ths_code is not None:
-                try:
-                    raw_ths_values = _fetch_ths_industry_kline(
-                        ths_code,
-                        days=days,
-                        settings=settings,
-                    )
-                    ths_values = [
-                        row
-                        for row in raw_ths_values
-                        if isinstance(row.get("date"), str)
-                        and row["date"] <= target_date
-                    ]
-                except requests.RequestException:
-                    ths_values = []
-                if ths_values:
-                    ths_fallback_codes.add(code)
-                    return code, ths_values
-            if not eastmoney_succeeded and not f164_eligible:
-                stop_event.set()
+        if stop_event.is_set() and not continue_after_error:
             cached = _read_history_cache(cache, code, hour_key, target_date)
             if cached:
                 history_cache_codes.add(code)
             return code, cached or []
+        eastmoney_succeeded = True
+        try:
+            raw_values = _em.fetch_sector_fund_flow_history(
+                secid,
+                days=days,
+                end_date=target_date,
+                client=client,
+            )
+            values = [
+                row
+                for row in raw_values
+                if isinstance(row.get("date"), str)
+                and row["date"] <= target_date
+            ]
+        except Exception:  # noqa: BLE001 - push2his failure degrades to THS/cache
+            eastmoney_succeeded = False
+            values = []
+        has_valid_daily_flow = any(
+            isinstance(row.get("main_net_inflow"), (int, float))
+            and not isinstance(row.get("main_net_inflow"), bool)
+            for row in values
+        )
+        if has_valid_daily_flow:
+            push2his_codes.add(code)
+            try:
+                cache.write_general(
+                    "sector_history",
+                    f"{code}:{hour_key}",
+                    target_date,
+                    {"values": values},
+                )
+            except Exception:  # noqa: BLE001 - cache write failure is non-fatal
+                pass
+            return code, values
+        cached = _read_history_cache(cache, code, hour_key, target_date)
+        if cached:
+            history_cache_codes.add(code)
+            return code, cached
+        ths_code = _em_to_ths_code(code)
+        if ths_code is not None:
+            try:
+                raw_ths_values = _fetch_ths_industry_kline(
+                    ths_code,
+                    days=days,
+                    settings=settings,
+                )
+                ths_values = [
+                    row
+                    for row in raw_ths_values
+                    if isinstance(row.get("date"), str)
+                    and row["date"] <= target_date
+                ]
+            except requests.RequestException:
+                ths_values = []
+            if ths_values:
+                ths_fallback_codes.add(code)
+                return code, ths_values
+        if not eastmoney_succeeded and not continue_after_error:
+            stop_event.set()
+        return code, []
 
     histories: dict[str, list[dict[str, Any]]] = {code: [] for code in codes}
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(pull_one, code): code for code in codes}
-        for future, code in futures.items():
-            try:
-                result_code, values = future.result(timeout=12)
-                histories[result_code] = values
-            except Exception:  # noqa: BLE001 - per-code failure degrades to empty
-                stop_event.set()
-                cached = _read_history_cache(cache, code, hour_key, target_date)
-                if cached:
-                    history_cache_codes.add(code)
-                histories[code] = cached or []
+    if not aggregate_only:
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = {executor.submit(pull_one, code): code for code in codes}
+            for future, code in futures.items():
+                try:
+                    result_code, values = future.result(timeout=12)
+                    histories[result_code] = values
+                except Exception:  # noqa: BLE001 - per-code failure degrades to empty
+                    stop_event.set()
+                    cached = _read_history_cache(cache, code, hour_key, target_date)
+                    if cached:
+                        history_cache_codes.add(code)
+                    histories[code] = cached or []
 
     five_day_totals: dict[str, float] = {}
     if days == 5:
@@ -888,6 +890,13 @@ def get_sector_fund_flow_history(
                 five_day_totals[code] = float(sum(daily_values))
 
     missing_push2his_codes = [code for code in codes if code not in push2his_codes]
+    if missing_push2his_codes:
+        f164_eligible, f164_eligibility_warning = _f164_eligibility(
+            target_date,
+            days,
+        )
+    else:
+        f164_eligible, f164_eligibility_warning = False, None
     f164_cache_hit = False
     f164_cache_write_failed = False
     if (
@@ -950,6 +959,12 @@ def get_sector_fund_flow_history(
         )
 
     warnings = []
+    if aggregate_only:
+        warnings.append(
+            "aggregate-only mode used; daily fund-flow history was not requested."
+        )
+    if f164_eligibility_warning:
+        warnings.append(f164_eligibility_warning)
     if push2his_codes:
         warnings.append(
             f"push2his daily fund-flow history used for {len(push2his_codes)} sectors."
@@ -985,6 +1000,34 @@ def get_sector_fund_flow_history(
         history_by_code=histories,
         five_day_main_net_inflow_by_code=five_day_totals,
         warnings=warnings,
+    )
+
+
+def _latest_sina_index_trade_date() -> str | None:
+    """Return the latest independently dated Shanghai index session."""
+    try:
+        rows = SinaClient().index_kline("sh000001", datalen=1)
+    except Exception:  # noqa: BLE001 - verification failure disables f164
+        return None
+    if not rows:
+        return None
+    value = rows[-1].get("date")
+    return str(value)[:10] if value else None
+
+
+def _f164_eligibility(target_date: str, days: int) -> tuple[bool, str | None]:
+    """Allow the undated f164 aggregate only for a verified latest session."""
+    if days != 5:
+        return False, None
+    latest_trade_date = _latest_sina_index_trade_date()
+    if latest_trade_date == target_date:
+        return True, None
+    if latest_trade_date is None:
+        return False, "f164 five-day aggregate skipped: latest trade date unverifiable."
+    return (
+        False,
+        "f164 five-day aggregate skipped: latest trade date "
+        f"{latest_trade_date} does not match target {target_date}.",
     )
 
 

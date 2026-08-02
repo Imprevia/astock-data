@@ -459,6 +459,33 @@ def test_fast_news_parses_fastnewslist(requests_mocker, client):
     assert last.headers["Referer"] == "https://kuaixun.eastmoney.com/"
 
 
+def test_fast_news_page_returns_and_forwards_vendor_cursor(requests_mocker, client):
+    payload = {
+        "data": {
+            "sortEnd": "1785659932031650",
+            "fastNewsList": [
+                {
+                    "title": "历史快讯",
+                    "summary": "摘要",
+                    "showTime": "2026-07-31 23:58:00",
+                }
+            ],
+        }
+    }
+    requests_mocker.get(em_module.FAST_NEWS_URL, json=payload)
+
+    news, cursor = client.fast_news_page(
+        limit=100,
+        sort_end="1785660000000000",
+    )
+
+    assert news[0]["title"] == "历史快讯"
+    assert cursor == "1785659932031650"
+    last = requests_mocker.request_history[-1]
+    assert last.qs["pagesize"] == ["100"]
+    assert last.qs["sortend"] == ["1785660000000000"]
+
+
 # ---------------------------------------------------------------------------
 # concept_blocks helper — asserts it calls EASTMONEY slist, NOT baidu.
 # ---------------------------------------------------------------------------

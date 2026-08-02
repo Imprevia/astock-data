@@ -5,8 +5,8 @@ first and falls back to Sina's GBK stock-news page when Eastmoney yields
 nothing or errors out, then filters items to ``[start_date, end_date]``.
 
 ``get_global_news`` merges CLS (财联社) telegraph wire with Eastmoney's 7x24
-fast-news feed, deduplicates by title (case-insensitive, stripped), and
-returns the first ``limit`` items.
+fast-news archive, filters to the requested date window, deduplicates by title
+(case-insensitive, stripped), and returns the first ``limit`` items.
 
 Both return structured Pydantic models from :mod:`astock_data.models.news`.
 Clients are injectable so tests stay fully offline; real defaults are
@@ -72,7 +72,12 @@ def _to_news_item(row: Mapping[str, object]) -> NewsItem:
     parsed_dt: dt.datetime | None = None
     if isinstance(time_raw, str) and time_raw:
         # Try a few common shapes emitted by the three vendors.
-        for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        for fmt in (
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%d",
+        ):
             try:
                 parsed_dt = dt.datetime.strptime(time_raw.strip(), fmt)
                 break
@@ -296,18 +301,20 @@ def get_global_news(
     cache: SQLiteStructuredCache | None = None,
     settings: AStockSettings | None = None,
 ) -> GlobalNewsResult:
-    """Fetch China/global market news (CLS wire + Eastmoney 7x24 feed).
+    """Fetch China/global market news inside an inclusive date window."""
 
-    The two sources are merged, deduplicated by title (case-insensitive,
-    stripped), and truncated to the first ``limit`` items.
-
-    ``curr_date`` is accepted for API parity with the source project but
-    the underlying feeds are live streams, so date-range filtering is not
-    applied here (matches the reference behavior).
-    """
+    if look_back_days < 1:
+        raise ValueError("look_back_days must be at least 1")
+    target_date = (
+        dt.datetime.strptime(curr_date, "%Y-%m-%d").date()
+        if curr_date
+        else dt.date.today()
+    )
+    start_date = target_date - dt.timedelta(days=look_back_days - 1)
+    end_date = target_date
 
     cache_kind = "global_news"
-    cache_date = curr_date
+    cache_date = target_date.isoformat()
     # Note: ``SQLiteStructuredCache`` keys by ticker+trade_date and validates
     # both, so global news (no ticker) uses a placeholder date-only key. Wrap
     # every cache touch in try/except so an invalid key never breaks reads.
@@ -318,43 +325,77 @@ def get_global_news(
             cached = cache.read(cache_kind, _GLOBAL_TICKER, cache_date)
         except Exception:  # noqa: BLE001
             cached = None
-        if cached is not None:
+        if (
+            isinstance(cached, dict)
+            and cached.get("window_start") == start_date.isoformat()
+            and cached.get("window_end") == end_date.isoformat()
+            and cached.get("complete") is True
+            and int(cached.get("limit") or 0) >= limit
+        ):
             rows = cached.get("items", []) if isinstance(cached, dict) else []
-            items = _dedupe_and_limit(
-                [_to_news_item(r) for r in rows if isinstance(r, dict)], limit
+            items = _filter_global_window(
+                [_to_news_item(r) for r in rows if isinstance(r, dict)],
+                start_date,
+                end_date,
             )
             return GlobalNewsResult(
-                items=items,
+                items=_dedupe_and_limit(items, limit),
                 source="cls+eastmoney",
                 retrieved_at=dt.datetime.now(),
+                warnings=list(cached.get("warnings") or []),
             )
 
     all_rows: list[dict] = []
+    warnings: list[str] = []
 
     # CLS wire — degrades silently on failure.
     try:
         all_rows.extend(_fetch_cls_telegraph(limit, session=cls_session))
-    except Exception:  # noqa: BLE001 — one source failing must not abort
-        pass
+    except Exception as exc:  # noqa: BLE001 — one source failing must not abort
+        warnings.append(f"CLS wire unavailable: {type(exc).__name__}: {exc}")
 
-    # Eastmoney 7x24 fast-news.
+    # Eastmoney 7x24 fast-news archive, newest page first.
     try:
         em = eastmoney if eastmoney is not None else EastmoneyClient(settings)
-        all_rows.extend(em.fast_news(limit))
-    except Exception:  # noqa: BLE001 — degraded but not fatal
-        pass
+        eastmoney_rows, archive_warnings = _fetch_fast_news_window(
+            em,
+            start_date,
+            end_date,
+            limit,
+        )
+        all_rows.extend(eastmoney_rows)
+        warnings.extend(archive_warnings)
+    except Exception as exc:  # noqa: BLE001 — degraded but not fatal
+        warnings.append(
+            f"Eastmoney fast-news unavailable: {type(exc).__name__}: {exc}"
+        )
 
-    items = _dedupe_and_limit(
-        [_to_news_item(r) for r in all_rows if isinstance(r, dict)], limit
+    window_items = _filter_global_window(
+        [_to_news_item(r) for r in all_rows if isinstance(r, dict)],
+        start_date,
+        end_date,
     )
+    items = _dedupe_and_limit(window_items, limit)
+    if not items:
+        warnings.append(
+            "No items were found inside the requested news window "
+            f"{start_date.isoformat()}..{end_date.isoformat()}."
+        )
 
-    if cache is not None and all_rows:
+    if cache is not None:
         try:
             cache.write(
                 cache_kind,
                 _GLOBAL_TICKER,
                 cache_date,
-                {"items": list(all_rows)},
+                {
+                    "items": [item.model_dump(mode="json") for item in items],
+                    "window_start": start_date.isoformat(),
+                    "window_end": end_date.isoformat(),
+                    "complete": True,
+                    "limit": limit,
+                    "warnings": warnings,
+                },
             )
         except Exception:  # noqa: BLE001 — caching must never break reads
             pass
@@ -363,7 +404,81 @@ def get_global_news(
         items=items,
         source="cls+eastmoney",
         retrieved_at=dt.datetime.now(),
+        warnings=warnings,
     )
+
+
+def _fetch_fast_news_window(
+    client: EastmoneyClient,
+    start_date: dt.date,
+    end_date: dt.date,
+    limit: int,
+    *,
+    page_size: int = 100,
+    max_pages: int = 60,
+) -> tuple[list[dict], list[str]]:
+    """Page backwards until the requested window is covered or exhausted."""
+
+    rows_in_window: list[dict] = []
+    warnings: list[str] = []
+    cursor = ""
+    reached_window = False
+
+    for _page in range(max_pages):
+        rows, next_cursor = client.fast_news_page(
+            limit=page_size,
+            sort_end=cursor,
+        )
+        if not rows:
+            break
+
+        page_dates = [
+            parsed
+            for row in rows
+            if (parsed := _parse_date(str(row.get("time", "") or "")))
+            is not None
+        ]
+        for row in rows:
+            published = _parse_date(str(row.get("time", "") or ""))
+            if published is not None and start_date <= published <= end_date:
+                rows_in_window.append(row)
+
+        if page_dates:
+            oldest = min(page_dates)
+            newest = max(page_dates)
+            reached_window = reached_window or (
+                oldest <= end_date and newest >= start_date
+            )
+            if oldest < start_date or len(rows_in_window) >= limit:
+                break
+
+        if not next_cursor or next_cursor == cursor:
+            break
+        cursor = next_cursor
+    else:
+        warnings.append(
+            f"Eastmoney fast-news pagination stopped after {max_pages} pages."
+        )
+
+    if not reached_window:
+        warnings.append(
+            "Eastmoney fast-news archive did not reach the requested news window."
+        )
+    return rows_in_window, warnings
+
+
+def _filter_global_window(
+    items: list[NewsItem],
+    start_date: dt.date,
+    end_date: dt.date,
+) -> list[NewsItem]:
+    """Keep only globally dated items inside the requested window."""
+
+    return [
+        item
+        for item in items
+        if item.time is not None and start_date <= item.time.date() <= end_date
+    ]
 
 
 def _dedupe_and_limit(items: list[NewsItem], limit: int) -> list[NewsItem]:

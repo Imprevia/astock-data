@@ -321,6 +321,9 @@ class SinaClient:
                     "name": str(row.get("name") or "").strip(),
                     "close": _to_float(row.get("trade") or row.get("price")),
                     "change_pct": _to_float(row.get("changepercent") or row.get("change_pct")),
+                    "volume": _to_float(row.get("volume")),
+                    "amount": _to_float(row.get("amount")),
+                    "ticktime": str(row.get("ticktime") or "").strip() or None,
                 }
             )
         return normalized
