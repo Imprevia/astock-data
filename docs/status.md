@@ -3,7 +3,7 @@
 ## Current State
 
 - Runtime: Python `>=3.10`; package boundary remains a pure data layer.
-- Public surface: 25 Python API functions, 25 CLI commands, and 25 MCP stdio tools.
+- Public surface: 26 Python API functions, 26 CLI commands, and 26 MCP stdio tools.
 - Consumer boundary: `daily-review` calls `python -m astock_data.cli` and consumes JSON.
 - Enforcement: stdlib-only docs-contract core/checker, lifecycle contract tests, three thin hooks, and the idempotent installer are implemented.
 - Hook connection: repository-local `core.hooksPath` is `.githooks`.
@@ -12,6 +12,7 @@
 - Sector ETF coverage: ten representative software/computer/media/communication/robot/electronics/gold/gaming/chemical/agriculture ETFs are added to the allowlist; the 2026-07-31 downstream mapping covers 82 of 89 sector rows.
 - ETF expansion verification: 91 focused API/CLI/MCP/docs tests passed; the final full suite passed 525 tests with 7 skips in 128.60 seconds; the full docs contract passed.
 - Global news: dated requests paginate the Eastmoney 7x24 archive with the vendor cursor and reject out-of-window live rows and legacy polluted cache entries.
+- Order book: Tencent five-level snapshots expose vendor time, visible bid/ask depth, spread and imbalance; bounded sampling emits only unattributed same-price depth changes and entered/left-view events.
 
 ## Evidence
 
@@ -54,6 +55,12 @@
 - Latest-session sector recovery live evidence: Sina verified `2026-07-31`, f164 returned 128 industry aggregates, and the enhanced review completed in about 61 seconds. Top30 retained eight detailed histories from live/cache and recovered eight additional five-day aggregates without inventing positive-day counts.
 - Market amount live evidence: the date-verified Sina market snapshot summed 2.5591 trillion yuan across 5,527 positive-amount stock rows for 2026-07-31; the index-K-line series remains separately labeled as a trend proxy.
 - Final retrieval regression: 524 tests passed with 7 skips in 134.08 seconds; `python scripts/check_docs_contract.py --mode full` passed.
+- Order-book focused verification after review remediation: 146 data-layer tests passed in 18.43 seconds; 7 buyer-exhaustion integration tests passed in 0.007 seconds.
+- Order-book revision 2 verification: 149 data-layer tests passed in 19.81 seconds; 9 buyer-exhaustion integration tests passed in 0.007 seconds after `position`, timeout isolation, inverse-time filtering, and malformed-payload regressions.
+- Order-book revision 3 verification: the corrected 26-command README contract test passed, followed by 149 data-layer tests and 9 buyer-exhaustion integration tests.
+- Order-book independent review passed revision 3 with no blocking findings.
+- Order-book final regression passed 551 tests with 7 skips in 133.26 seconds; full docs contract and both repository diff checks passed.
+- Order-book live evidence for 600809 returned five bids and five asks in lots at vendor time `20260804161500`; duplicate closing timestamps produced no changes and `exact_cancellation_available` remained false.
 
 ## Remaining Gaps
 
@@ -63,3 +70,4 @@
 - `basedpyright` remains unavailable by prior decision. The no-excuse audit found no newly introduced violation after cache-write warning cleanup; inherited findings and all changed-file LOC values are recorded in the active sector f164 plan.
 - The f164 plan and active index now agree that implementation is complete and awaiting archive.
 - Fine-grained industries absent from the official f164 industry universe still depend on push2his or a prior valid cache; no parent-industry value is substituted.
+- Order-book exact cancellations, hidden liquidity, order identity, and historical intraday depth before collection remain unavailable by design.

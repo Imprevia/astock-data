@@ -47,6 +47,7 @@ def test_help_exits_zero_and_lists_subcommands():
     for name in (
         "resolve",
         "kline",
+        "order-book",
         "indicator",
         "market-breadth",
         "fundamentals",
@@ -68,12 +69,12 @@ def test_help_exits_zero_and_lists_subcommands():
         assert name in out, f"missing subcommand in --help: {name}"
 
 
-def test_twenty_five_subcommands_registered():
+def test_twenty_six_subcommands_registered():
     from typer.main import get_command
 
     cmds = get_command(app).commands
-    # 19 core commands + 6 daily-review commands = 25 total.
-    assert len(cmds) == 25
+    # 20 core commands + 6 daily-review commands = 26 total.
+    assert len(cmds) == 26
 
 
 def test_subcommands_are_registered_once():
@@ -82,7 +83,7 @@ def test_subcommands_are_registered_once():
         for command in app.registered_commands
     ]
 
-    assert len(command_names) == 25
+    assert len(command_names) == 26
     assert len(command_names) == len(set(command_names))
 
 
@@ -94,6 +95,20 @@ def test_index_kline_help_lists_only_supported_keys():
         re.findall(r"\b(?:sh|szci|cyb|hs300|sz|kc50|zz500)\b", result.output)
     )
     assert documented_keys == {"sh", "szci", "cyb", "hs300"}
+
+
+def _fake_order_book_result():
+    from astock_data.models import OrderBookResult, Ticker
+
+    return OrderBookResult(
+        source="tencent",
+        retrieved_at="2026-08-04T10:15:30+08:00",
+        ticker=Ticker(code="688017", market="sh"),
+        samples_requested=1,
+        interval_seconds=1.0,
+        snapshots=[],
+        changes=[],
+    )
 
 
 def test_default_format_is_json():
@@ -159,6 +174,16 @@ def test_kline_period_option_is_forwarded_to_facade():
 
     assert result.exit_code == 0, result.stderr
     assert patched.call_args.kwargs["period"] == "week"
+
+
+def test_order_book_json_exposes_exact_cancellation_capability() -> None:
+    fake = _fake_order_book_result()
+    with mock.patch.object(cli_module.api, "get_order_book", return_value=fake):
+        result = runner.invoke(app, ["order-book", "688017"])
+
+    assert result.exit_code == 0, result.stderr
+    payload = json.loads(result.output)
+    assert payload["exact_cancellation_available"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +301,7 @@ def test_each_command_routes_to_facade():
     cases = [
         (["resolve", "688017"], "resolve_ticker", lambda m: m.return_value, ticker_result),
         (["kline", "688017", "--start", "2026-05-01", "--end", "2026-05-12"], "get_stock_data", lambda m: m.return_value, generic_result),
+        (["order-book", "688017", "--samples", "2", "--interval-seconds", "1.5"], "get_order_book", lambda m: m.return_value, generic_result),
         (["indicator", "688017", "--indicator", "macd", "--curr-date", "2026-05-12", "--look-back-days", "30"], "get_indicators", lambda m: m.return_value, generic_result),
         (["market-breadth", "--date", "2026-05-12"], "get_market_breadth", lambda m: m.return_value, generic_result),
         (["fundamentals", "688017"], "get_fundamentals", lambda m: m.return_value, generic_result),

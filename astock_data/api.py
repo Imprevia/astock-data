@@ -1,7 +1,7 @@
 """Public service facade — the canonical import surface for ``astock_data``.
 
-This module re-exports the 25 public functions of the library:
-24 ``get_*`` data entrypoints (re-exported from
+This module re-exports the 26 public functions of the library:
+25 ``get_*`` data entrypoints (re-exported from
 :mod:`astock_data.services`) plus :func:`resolve_ticker` (re-exported from
 :mod:`astock_data.resolver`, the single ticker-resolution safety boundary).
 
@@ -10,7 +10,7 @@ All public functions return structured Pydantic models — never plain ``str``.
 Example
 -------
     >>> from astock_data.api import get_stock_data, resolve_ticker
-    >>> from astock_data.api import __all__  # 25 names
+    >>> from astock_data.api import __all__  # 26 names
 
 Intentionally does NOT re-export the old ``route_to_vendor`` semantics or any
 private helper; consumers depend only on this stable surface.
@@ -36,6 +36,7 @@ from .services import (
     get_market_breadth,
     get_news,
     get_northbound_flow,
+    get_order_book,
     get_profit_forecast,
     get_sector_fund_flow,
     get_sector_fund_flow_history,
@@ -47,10 +48,11 @@ from .services import (
 __all__ = [
     # resolver (1)
     "resolve_ticker",
-    # market_data (5)
+    # market_data (7)
     "get_stock_data",
     "get_indicators",
     "get_market_breadth",
+    "get_order_book",
     "get_index_kline",
     "get_stock_amount",
     "get_etf_daily",

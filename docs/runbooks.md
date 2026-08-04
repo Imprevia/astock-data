@@ -45,6 +45,14 @@ python -m astock_data.cli global-news --curr-date 2026-07-31 --look-back-days 1 
 
 所有返回项的 `time` 必须落在 2026-07-31；若供应商档案未覆盖目标日，应返回空 `items` 和 warning，不能返回当前实时新闻。
 
+腾讯五档盘口默认只取一张快照，不主动等待。需要动态可见深度证据时可显式请求有限采样：
+
+```powershell
+python -m astock_data.cli order-book 600809 --samples 3 --interval-seconds 1 --format json
+```
+
+`samples` 和 `interval-seconds` 均为 1-60，且 `(samples - 1) * interval-seconds` 不得超过 300 秒。档位对象使用 `position`、`price`、`volume_lots`；`exact_cancellation_available` 固定为 `false`。深度减少只标记为 `unattributed`，`left-view` 不得解释为精确撤单。全部样本无效会返回类型化数据源错误，部分成功则保留有效快照和 warning。
+
 代表性行业 ETF 扩展的离线与真实行情验证：
 
 ```powershell

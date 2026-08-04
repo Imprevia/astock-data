@@ -1,6 +1,6 @@
 # Repository Guide
 
-本仓库是 Python `>=3.10` 的 A 股纯数据层。产品能力、安装和完整 25 项接口表以 [README](../README.md) 为准，未发布变化以 [CHANGELOG](../CHANGELOG.md) 为准。
+本仓库是 Python `>=3.10` 的 A 股纯数据层。产品能力、安装和完整 26 项接口表以 [README](../README.md) 为准，未发布变化以 [CHANGELOG](../CHANGELOG.md) 为准。
 
 ## 修改路由
 

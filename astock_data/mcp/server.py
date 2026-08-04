@@ -1,4 +1,4 @@
-"""MCP server for ``astock-data`` — exposes the 25 public API functions as tools.
+"""MCP server for ``astock-data`` — exposes the 26 public API functions as tools.
 
 Uses the official FastMCP Python SDK (`from fastmcp import FastMCP`) over the
 default stdio transport. Each tool is a thin adapter around the public facade
@@ -38,6 +38,9 @@ mcp = FastMCP("astock-data")
 
 _MAX_CODES: Final = 50
 _MAX_DAYS: Final = 365
+_MAX_ORDER_BOOK_SAMPLES: Final = 60
+_MAX_ORDER_BOOK_INTERVAL_SECONDS: Final = 60.0
+_MAX_ORDER_BOOK_WAIT_SECONDS: Final = 300.0
 _ETF_CODE_PATTERN: Final = re.compile(r"\d{6}")
 _SECTOR_CODE_PATTERN: Final = re.compile(r"BK\d{4}")
 
@@ -98,8 +101,38 @@ def _parse_codes(
     return list(dict.fromkeys(codes))
 
 
+def _parse_order_book_sampling(
+    samples: int,
+    interval_seconds: float,
+) -> tuple[int, float]:
+    if (
+        isinstance(samples, bool)
+        or not isinstance(samples, int)
+        or not 1 <= samples <= _MAX_ORDER_BOOK_SAMPLES
+    ):
+        raise MarketValidationError(
+            f"samples must be between 1 and {_MAX_ORDER_BOOK_SAMPLES}"
+        )
+    if (
+        isinstance(interval_seconds, bool)
+        or not isinstance(interval_seconds, (int, float))
+        or not 1 <= interval_seconds <= _MAX_ORDER_BOOK_INTERVAL_SECONDS
+    ):
+        raise MarketValidationError(
+            "interval_seconds must be between 1 and "
+            f"{_MAX_ORDER_BOOK_INTERVAL_SECONDS:g}"
+        )
+    planned_wait = (samples - 1) * float(interval_seconds)
+    if planned_wait > _MAX_ORDER_BOOK_WAIT_SECONDS:
+        raise MarketValidationError(
+            "planned order-book sampling wait must not exceed "
+            f"{_MAX_ORDER_BOOK_WAIT_SECONDS:g} seconds"
+        )
+    return samples, float(interval_seconds)
+
+
 # ---------------------------------------------------------------------------
-# Tools — 1:1 with the 25 public API functions
+# Tools — 1:1 with the 26 public API functions
 # ---------------------------------------------------------------------------
 
 
@@ -361,6 +394,25 @@ def get_stock_amount(ticker: str, days: int = 10) -> dict[str, Any]:
     """Fetch recent daily amount (成交额) series for an A-share."""
     try:
         return _serialize(api.get_stock_amount(ticker, _parse_days(days)))
+    except AStockDataError as exc:
+        return _error_payload(exc)
+
+
+@mcp.tool()
+def get_order_book(
+    ticker: str,
+    samples: int = 1,
+    interval_seconds: float = 1.0,
+) -> dict[str, Any]:
+    """Fetch bounded Tencent five-level snapshots and visible-depth changes."""
+    try:
+        parsed_samples, parsed_interval = _parse_order_book_sampling(
+            samples,
+            interval_seconds,
+        )
+        return _serialize(
+            api.get_order_book(ticker, parsed_samples, parsed_interval)
+        )
     except AStockDataError as exc:
         return _error_payload(exc)
 

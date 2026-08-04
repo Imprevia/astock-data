@@ -26,7 +26,7 @@ def _model(model_cls, **kwargs):
     return model_cls(**shared)
 
 
-# The 25 public functions, one per MCP tool.
+# The 26 public functions, one per MCP tool.
 EXPECTED_TOOLS = [
     "resolve_ticker",
     "get_balance_sheet",
@@ -47,6 +47,7 @@ EXPECTED_TOOLS = [
     "get_market_breadth",
     "get_news",
     "get_northbound_flow",
+    "get_order_book",
     "get_profit_forecast",
     "get_sector_fund_flow",
     "get_sector_fund_flow_history",
@@ -82,9 +83,9 @@ def _server_module():
 
 
 class TestToolRegistration:
-    def test_exactly_25_tools_registered(self):
+    def test_exactly_26_tools_registered(self):
         names = _registered_tool_names()
-        assert len(names) == 25
+        assert len(names) == 26
 
     def test_expected_tool_names_match_exactly(self):
         names = _registered_tool_names()
@@ -125,6 +126,10 @@ class TestToolRegistration:
         fund_schema = _input_schema(tools["get_fundamentals"])
         assert "curr_date" in fund_schema["properties"]
         assert "curr_date" not in fund_schema.get("required", [])
+        order_book_schema = _input_schema(tools["get_order_book"])
+        assert order_book_schema.get("required", []) == ["ticker"]
+        assert order_book_schema["properties"]["samples"]["default"] == 1
+        assert order_book_schema["properties"]["interval_seconds"]["default"] == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -193,7 +198,27 @@ class TestJsonSerializable:
         json.dumps(result)
         assert result["ticker"] == "688017"
 
-    def test_all_25_tools_produce_json_serializable_output(self, monkeypatch):
+    def test_get_order_book_exposes_exact_cancellation_capability(
+        self,
+        monkeypatch,
+    ):
+        from astock_data.models import OrderBookResult, Ticker
+
+        fake = _model(
+            OrderBookResult,
+            ticker=Ticker(code="000001", market="sz"),
+            samples_requested=1,
+            interval_seconds=1.0,
+            snapshots=[],
+            changes=[],
+        )
+        monkeypatch.setattr("astock_data.api.get_order_book", lambda *a, **k: fake)
+
+        result = _server_module().get_order_book("000001")
+
+        assert result["exact_cancellation_available"] is False
+
+    def test_all_26_tools_produce_json_serializable_output(self, monkeypatch):
         """Every tool, with its api function stubbed to a minimal model,
         must return a dict that ``json.dumps`` accepts."""
         from astock_data.models.base import ResultBase, Ticker
@@ -223,6 +248,7 @@ class TestJsonSerializable:
             "get_market_breadth": (server.get_market_breadth, ("2026-01-02",)),
             "get_index_kline": (server.get_index_kline, ("sh", 10)),
             "get_stock_amount": (server.get_stock_amount, ("000001", 10)),
+            "get_order_book": (server.get_order_book, ("000001", 1, 1.0)),
             "get_etf_daily": (server.get_etf_daily, (["512480"], 10)),
             "get_fundamentals": (server.get_fundamentals, ("000001", "2026-01-02")),
             "get_balance_sheet": (server.get_balance_sheet, ("000001", "quarterly", "2026-01-02")),
@@ -327,6 +353,29 @@ class TestErrorPayload:
 
 
 class TestInputBoundaries:
+    @pytest.mark.parametrize(
+        ("samples", "interval_seconds"),
+        [(0, 1.0), (61, 1.0), (2, 0.5), (2, 61.0), (60, 6.0)],
+    )
+    def test_invalid_order_book_sampling_returns_error_before_api_call(
+        self,
+        monkeypatch,
+        samples,
+        interval_seconds,
+    ):
+        def _unexpected_call(*_args, **_kwargs):
+            raise AssertionError("API must not be called for invalid sampling")
+
+        monkeypatch.setattr("astock_data.api.get_order_book", _unexpected_call)
+        result = _server_module().get_order_book(
+            "000001",
+            samples,
+            interval_seconds,
+        )
+
+        assert result["error"]["type"] == "MarketValidationError"
+        assert set(result["error"]) == {"type", "message"}
+
     @pytest.mark.parametrize(
         ("tool_name", "args"),
         [

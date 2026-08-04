@@ -7,10 +7,10 @@
 - `docs/runbooks.md`，安装、验证、门禁和故障处理命令。
 - `docs/status.md` 与 `docs/exec-plans/active/`，当前状态、执行计划和完成证据。
 - `pyproject.toml`，定义依赖、pytest 配置、CLI 入口、MCP 相关安装信息。
-- `astock_data/api.py`，25 个公开函数的统一门面。
+- `astock_data/api.py`，26 个公开函数的统一门面。
 - `astock_data/__init__.py`，顶层重导出与版本号。
-- `astock_data/cli.py`，25 个 CLI 子命令入口。
-- `astock_data/mcp/server.py`，25 个 FastMCP 工具入口。
+- `astock_data/cli.py`，26 个 CLI 子命令入口。
+- `astock_data/mcp/server.py`，26 个 FastMCP 工具入口。
 - `tests/`，离线优先的回归测试与契约测试。
 
 ## 允许修改
@@ -37,4 +37,4 @@
 - `python scripts/check_docs_contract.py --mode full`
 
 ## 与公共接口的关系
-根目录只负责把 25 个公开入口、25 个 CLI 子命令、25 个 MCP 工具组织成同一套纯数据层门面，不在这里放业务实现。
+根目录只负责把 26 个公开入口、26 个 CLI 子命令、26 个 MCP 工具组织成同一套纯数据层门面，不在这里放业务实现。

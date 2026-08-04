@@ -1,6 +1,6 @@
 """Typer-based command-line interface for ``astock-data``.
 
-Exposes one subcommand per public facade function (25 in total) plus a
+Exposes one subcommand per public facade function (26 in total) plus a
 ``--format json|markdown|text`` (default ``json``) and ``--no-cache`` option.
 
 ``--format`` / ``--no-cache`` may be passed either before or after the
@@ -222,6 +222,24 @@ def kline(
         return api.get_stock_data(symbol, start, end, period=period)
 
     _run(_call)
+
+
+@app.command("order-book", help="Fetch bounded Tencent five-level order-book snapshots.")
+def order_book(
+    symbol: str = typer.Argument(..., help="Ticker / code / Chinese name."),
+    samples: int = typer.Option(1, "--samples", help="Snapshot count, from 1 to 60."),
+    interval_seconds: float = typer.Option(
+        1.0,
+        "--interval-seconds",
+        help="Seconds between snapshots, from 1 to 60.",
+    ),
+    format: Optional[str] = _FORMAT_OPT,
+    no_cache: Optional[bool] = _NO_CACHE_OPT,
+) -> None:
+    """get_order_book"""
+
+    _apply_global_options(format=format, no_cache=no_cache)
+    _run(lambda: api.get_order_book(symbol, samples, interval_seconds))
 
 
 @app.command(help="Compute a technical indicator series for a symbol.")

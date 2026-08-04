@@ -25,6 +25,10 @@ from astock_data.models import (
     LimitStats,
     MarketBreadthResult,
     OHLCVBar,
+    OrderBookChange,
+    OrderBookLevel,
+    OrderBookResult,
+    OrderBookSnapshot,
     Quote,
     ResultBase,
     ResultMeta,
@@ -74,6 +78,54 @@ def test_market_models_serialize_to_json() -> None:
 
     assert stock.model_dump(mode="json")["bars"][0]["date"] == "2026-06-17"
     assert indicator.model_dump(mode="json")["points"][0]["value"] == "N/A"
+
+
+def test_order_book_models_preserve_visible_depth_semantics() -> None:
+    snapshot = OrderBookSnapshot(
+        vendor_timestamp="20260804101530",
+        last_price=10.0,
+        bids=[OrderBookLevel(position=1, price=9.99, volume_lots=100)],
+        asks=[OrderBookLevel(position=1, price=10.01, volume_lots=120)],
+        bid_depth_lots=100,
+        ask_depth_lots=120,
+        spread=0.02,
+        imbalance=-20 / 220,
+    )
+    change = OrderBookChange(
+        side="bid",
+        price=9.99,
+        previous_volume_lots=100,
+        current_volume_lots=60,
+        delta_volume_lots=-40,
+        event="depth-decrease",
+        attribution="unattributed",
+        from_vendor_timestamp="20260804101530",
+        to_vendor_timestamp="20260804101531",
+    )
+    result = OrderBookResult(
+        source="tencent",
+        retrieved_at=RETRIEVED_AT,
+        ticker=Ticker(code="000001", market="sz"),
+        samples_requested=2,
+        interval_seconds=1.0,
+        snapshots=[snapshot],
+        changes=[change],
+    )
+
+    dumped = result.model_dump(mode="json")
+    assert dumped["snapshots"][0]["vendor_timestamp"] == "20260804101530"
+    assert dumped["snapshots"][0]["bid_depth_lots"] == 100
+    assert dumped["exact_cancellation_available"] is False
+    assert dumped["changes"][0]["event"] == "depth-decrease"
+    assert dumped["changes"][0]["attribution"] == "unattributed"
+
+
+def test_order_book_level_schema_uses_position_contract() -> None:
+    schema = OrderBookLevel.model_json_schema()
+
+    assert set(schema["properties"]) == {"position", "price", "volume_lots"}
+    assert set(schema["required"]) == {"position", "price", "volume_lots"}
+    assert "level" not in schema["properties"]
 
 
 def test_market_breadth_models_serialize_to_json() -> None:

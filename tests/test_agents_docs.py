@@ -69,12 +69,12 @@ def test_agents_md_avoid_forbidden_phrases():
     assert not violations, "\n".join(violations)
 
 
-def test_readme_cli_table_has_25_unique_commands():
+def test_readme_cli_table_has_26_unique_commands():
     rows = _markdown_table_rows(_readme(), "| 子命令 | 对应 Python API |")
     commands = [re.sub(r"`", "", row[0]) for row in rows]
 
-    assert len(commands) == 25
-    assert len(set(commands)) == 25
+    assert len(commands) == 26
+    assert len(set(commands)) == 26
 
 
 def test_readme_data_source_contracts_are_structured():

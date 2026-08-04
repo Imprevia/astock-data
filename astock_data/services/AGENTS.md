@@ -1,5 +1,5 @@
 ## 目录职责
-`astock_data/services` 放服务模块，把客户端和模型组合成 18 个 `get_*` 公共函数。
+`astock_data/services` 放服务模块，把客户端和模型组合成 25 个 `get_*` 公共函数。
 
 ## 关键文件
 - `market_data.py`，`get_stock_data` 与 `get_indicators`。
@@ -27,4 +27,4 @@
 - `python -m pytest tests/test_signals_group_b.py -q`
 
 ## 与公共接口的关系
-这里是 18 个 `get_*` 入口的实现层，`api.py` 和 `mcp/server.py` 只做转发，不重复业务逻辑。
+这里是 25 个 `get_*` 入口的实现层，`api.py` 和 `mcp/server.py` 只做转发，不重复业务逻辑。

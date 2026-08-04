@@ -3,7 +3,7 @@
 The individual service modules (``market_data`` / ``fundamentals`` / ``news``
 / ``signals_a`` / ``signals_b``) own the implementation; this package init is
 the single re-export surface so callers can do ``from astock_data.services
-import get_stock_data`` for any of the 18 public ``get_*`` functions.
+import get_stock_data`` for any of the 25 public ``get_*`` functions.
 
 Note: ``resolve_ticker`` is NOT re-exported here — it lives in
 ``astock_data.resolver`` (the resolver is a cross-cutting safety boundary, not
@@ -21,6 +21,7 @@ from .market_data import (
     get_etf_daily,
     get_index_kline,
     get_indicators,
+    get_order_book,
     get_stock_amount,
     get_stock_data,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "get_index_kline",
     "get_indicators",
     "get_market_breadth",
+    "get_order_book",
     "get_stock_amount",
     "get_stock_data",
     # news

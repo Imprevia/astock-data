@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from .base import ResultBase, Ticker
 
@@ -58,6 +59,49 @@ class IndexKlineResult(ResultBase):
 class StockAmountResult(ResultBase):
     ticker: Ticker
     bars: list[KlineBar]
+
+
+class OrderBookLevel(BaseModel):
+    position: int = Field(ge=1, le=5)
+    price: float = Field(gt=0)
+    volume_lots: float = Field(ge=0)
+
+
+class OrderBookSnapshot(BaseModel):
+    vendor_timestamp: str = Field(pattern=r"^\d{14}$")
+    last_price: float | None = None
+    bids: list[OrderBookLevel]
+    asks: list[OrderBookLevel]
+    bid_depth_lots: float = Field(ge=0)
+    ask_depth_lots: float = Field(ge=0)
+    spread: float | None = None
+    imbalance: float | None = Field(default=None, ge=-1, le=1)
+
+
+class OrderBookChange(BaseModel):
+    side: Literal["bid", "ask"]
+    price: float = Field(gt=0)
+    previous_volume_lots: float | None = Field(default=None, ge=0)
+    current_volume_lots: float | None = Field(default=None, ge=0)
+    delta_volume_lots: float
+    event: Literal[
+        "depth-increase",
+        "depth-decrease",
+        "entered-view",
+        "left-view",
+    ]
+    attribution: Literal["unattributed"] = "unattributed"
+    from_vendor_timestamp: str = Field(pattern=r"^\d{14}$")
+    to_vendor_timestamp: str = Field(pattern=r"^\d{14}$")
+
+
+class OrderBookResult(ResultBase):
+    ticker: Ticker
+    samples_requested: int = Field(ge=1, le=60)
+    interval_seconds: float = Field(ge=1, le=60)
+    exact_cancellation_available: bool = False
+    snapshots: list[OrderBookSnapshot]
+    changes: list[OrderBookChange]
 
 
 class EtfDailyResult(BaseModel):

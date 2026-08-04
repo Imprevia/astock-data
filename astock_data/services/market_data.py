@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from pydantic import ValidationError
 from stockstats import StockDataFrame as Sdf
 
 from astock_data.cache import CsvKlineCache
@@ -13,7 +16,7 @@ from astock_data.clients.sina import SinaClient
 from astock_data.clients.tdx import TdxClient
 from astock_data.clients.tencent import TencentClient
 from astock_data.config import AStockSettings, get_settings
-from astock_data.errors import MarketValidationError
+from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.market import validate_date_range
 from astock_data.models import (
     EtfDailyResult,
@@ -22,6 +25,9 @@ from astock_data.models import (
     IndicatorResult,
     KlineBar,
     OHLCVBar,
+    OrderBookChange,
+    OrderBookResult,
+    OrderBookSnapshot,
     StockAmountResult,
     StockDataResult,
     Ticker,
@@ -206,6 +212,159 @@ def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
         ticker=resolved,
         name=resolved.name,
         bars=bars,
+        warnings=warnings,
+    )
+
+
+def _validate_order_book_sampling(samples: int, interval_seconds: float) -> None:
+    if isinstance(samples, bool) or not isinstance(samples, int) or not 1 <= samples <= 60:
+        raise MarketValidationError("samples must be an integer between 1 and 60")
+    if (
+        isinstance(interval_seconds, bool)
+        or not isinstance(interval_seconds, (int, float))
+        or not 1 <= interval_seconds <= 60
+    ):
+        raise MarketValidationError("interval_seconds must be between 1 and 60")
+    planned_wait = (samples - 1) * float(interval_seconds)
+    if planned_wait > 300:
+        raise MarketValidationError(
+            "planned order-book sampling wait must not exceed 300 seconds"
+        )
+
+
+def _depth_by_price(snapshot: OrderBookSnapshot, side: str) -> dict[float, float]:
+    levels = snapshot.bids if side == "bid" else snapshot.asks
+    depth: dict[float, float] = {}
+    for level in levels:
+        depth[level.price] = depth.get(level.price, 0.0) + level.volume_lots
+    return depth
+
+
+def _compare_order_book_snapshots(
+    previous: OrderBookSnapshot,
+    current: OrderBookSnapshot,
+) -> list[OrderBookChange]:
+    """Compare visible depth only at matching side and price coordinates."""
+
+    changes: list[OrderBookChange] = []
+    for side in ("bid", "ask"):
+        previous_depth = _depth_by_price(previous, side)
+        current_depth = _depth_by_price(current, side)
+        for price in sorted(previous_depth.keys() | current_depth.keys()):
+            previous_volume = previous_depth.get(price)
+            current_volume = current_depth.get(price)
+            if previous_volume is None:
+                event = "entered-view"
+                delta_volume = current_volume or 0.0
+            elif current_volume is None:
+                event = "left-view"
+                delta_volume = -previous_volume
+            else:
+                delta_volume = current_volume - previous_volume
+                if delta_volume == 0:
+                    continue
+                event = "depth-increase" if delta_volume > 0 else "depth-decrease"
+            changes.append(
+                OrderBookChange(
+                    side=side,
+                    price=price,
+                    previous_volume_lots=previous_volume,
+                    current_volume_lots=current_volume,
+                    delta_volume_lots=delta_volume,
+                    event=event,
+                    attribution="unattributed",
+                    from_vendor_timestamp=previous.vendor_timestamp,
+                    to_vendor_timestamp=current.vendor_timestamp,
+                )
+            )
+    return changes
+
+
+def get_order_book(
+    ticker: str,
+    samples: int = 1,
+    interval_seconds: float = 1.0,
+    *,
+    tencent: TencentClient | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> OrderBookResult:
+    """Collect bounded Tencent five-level snapshots and visible-depth changes."""
+
+    # Validate the complete wait budget before resolver or vendor access.
+    _validate_order_book_sampling(samples, interval_seconds)
+    resolved = resolve_ticker(ticker)
+    client = tencent or TencentClient()
+    sleep_fn = sleep or time.sleep
+    snapshots: list[OrderBookSnapshot] = []
+    changes: list[OrderBookChange] = []
+    warnings: list[str] = []
+    comparison_snapshot: OrderBookSnapshot | None = None
+    resolved_with_name = resolved
+
+    for sample_index in range(samples):
+        try:
+            row = client.order_book(resolved.code)
+        except DataSourceError as exc:
+            warnings.append(
+                f"Tencent order-book sample {sample_index + 1} failed: {exc}"
+            )
+        else:
+            if not row:
+                warnings.append(
+                    f"Tencent order-book sample {sample_index + 1} returned no usable snapshot"
+                )
+            else:
+                try:
+                    snapshot = OrderBookSnapshot.model_validate(row)
+                except ValidationError as exc:
+                    warnings.append(
+                        "Tencent order-book sample "
+                        f"{sample_index + 1} was invalid: {exc.errors()[0]['msg']}"
+                    )
+                else:
+                    snapshots.append(snapshot)
+                    if row.get("name") and not resolved.name:
+                        resolved_with_name = resolved.model_copy(update={"name": row["name"]})
+                    if comparison_snapshot is not None:
+                        if snapshot.vendor_timestamp == comparison_snapshot.vendor_timestamp:
+                            warnings.append(
+                                "duplicate Tencent vendor timestamp; dynamic comparison skipped"
+                            )
+                        elif snapshot.vendor_timestamp < comparison_snapshot.vendor_timestamp:
+                            warnings.append(
+                                "non-increasing Tencent vendor timestamp; dynamic comparison skipped"
+                            )
+                        else:
+                            changes.extend(
+                                _compare_order_book_snapshots(
+                                    comparison_snapshot,
+                                    snapshot,
+                                )
+                            )
+                            comparison_snapshot = snapshot
+                    else:
+                        comparison_snapshot = snapshot
+
+        if sample_index < samples - 1:
+            sleep_fn(float(interval_seconds))
+
+    if not snapshots:
+        warning_context = "; ".join(warnings) or "no vendor response details"
+        raise DataSourceError(
+            "Tencent order-book sampling returned no usable snapshots "
+            f"for ticker={resolved.code}: {warning_context}"
+        )
+
+    return OrderBookResult(
+        source="tencent",
+        retrieved_at=_now_utc(),
+        ticker=resolved_with_name,
+        name=resolved_with_name.name,
+        samples_requested=samples,
+        interval_seconds=float(interval_seconds),
+        exact_cancellation_available=False,
+        snapshots=snapshots,
+        changes=changes,
         warnings=warnings,
     )
 

@@ -7,6 +7,7 @@ Clients do ONLY transport + parsing; no business validation lives here.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import Optional
 
 import requests
@@ -156,6 +157,18 @@ class TencentClient:
         prefixed = [f"{_market_prefix(c)}{c}" for c in codes]
         return self._quote_prefixed(prefixed)
 
+    def order_book(self, code: str) -> dict:
+        """Fetch one Tencent five-level order-book snapshot.
+
+        Bid/ask volumes are returned in the vendor's native ``volume_lots``
+        unit, where one lot represents 100 shares. The vendor timestamp is
+        preserved as ``YYYYMMDDHHMMSS`` local exchange time.
+        """
+
+        prefixed = f"{_market_prefix(code)}{code}"
+        raw = self._fetch_raw([prefixed])
+        return self._parse_order_books(raw).get(code, {})
+
     def index_snapshots(self) -> dict[str, dict]:
         """Fetch fixed market index snapshots from Tencent batch quotes."""
 
@@ -188,6 +201,19 @@ class TencentClient:
         if not prefixed:
             return {}
 
+        raw = self._fetch_raw(prefixed)
+        try:
+            return self._parse(raw, keep_prefix=keep_prefix)
+        except DataSourceError:
+            raise
+        except Exception as exc:  # malformed payload
+            raise DataSourceError(
+                f"Tencent quote parse failed: {exc}"
+            ) from exc
+
+    def _fetch_raw(self, prefixed: list[str]) -> str:
+        """Fetch and decode a Tencent batch quote payload."""
+
         url = self.QUOTE_URL + ",".join(prefixed)
 
         try:
@@ -212,15 +238,7 @@ class TencentClient:
             raise DataSourceError(
                 f"Tencent quote GBK decode failed: {exc}"
             ) from exc
-
-        try:
-            return self._parse(raw, keep_prefix=keep_prefix)
-        except DataSourceError:
-            raise
-        except Exception as exc:  # malformed payload
-            raise DataSourceError(
-                f"Tencent quote parse failed: {exc}"
-            ) from exc
+        return raw
 
     @staticmethod
     def _parse(raw: str, *, keep_prefix: bool = False) -> dict[str, dict]:
@@ -252,6 +270,75 @@ class TencentClient:
                     entry[field] = vals[idx]
             result[code] = entry
         return result
+
+    @staticmethod
+    def _parse_order_books(raw: str) -> dict[str, dict]:
+        """Parse five bid and five ask levels from Tencent quote rows."""
+
+        result: dict[str, dict] = {}
+        for line in raw.strip().split(";"):
+            line = line.strip()
+            if not line or "=" not in line or '"' not in line:
+                continue
+            head = line.split("=", 1)[0]
+            prefixed_key = head.split("_")[-1].strip()
+            code = prefixed_key[2:] if len(prefixed_key) > 2 else prefixed_key
+            vals = line.split('"', 2)[1].split("~")
+            if len(vals) < 53:
+                continue
+
+            vendor_timestamp = vals[30].strip()
+            try:
+                datetime.strptime(vendor_timestamp, "%Y%m%d%H%M%S")
+            except ValueError:
+                continue
+
+            bids = TencentClient._parse_depth_levels(vals, start_index=9)
+            asks = TencentClient._parse_depth_levels(vals, start_index=19)
+            bid_depth_lots = sum(level["volume_lots"] for level in bids)
+            ask_depth_lots = sum(level["volume_lots"] for level in asks)
+            total_depth = bid_depth_lots + ask_depth_lots
+            spread = asks[0]["price"] - bids[0]["price"] if bids and asks else None
+            imbalance = (
+                (bid_depth_lots - ask_depth_lots) / total_depth
+                if total_depth > 0
+                else None
+            )
+            result[code] = {
+                "name": vals[1].strip(),
+                "vendor_timestamp": vendor_timestamp,
+                "last_price": _to_optional_float(vals[3]),
+                "bids": bids,
+                "asks": asks,
+                "bid_depth_lots": bid_depth_lots,
+                "ask_depth_lots": ask_depth_lots,
+                "spread": spread,
+                "imbalance": imbalance,
+            }
+        return result
+
+    @staticmethod
+    def _parse_depth_levels(
+        vals: list[str], *, start_index: int
+    ) -> list[dict[str, float | int]]:
+        levels: list[dict[str, float | int]] = []
+        for position in range(1, 6):
+            price_index = start_index + (position - 1) * 2
+            volume_index = price_index + 1
+            if volume_index >= len(vals):
+                break
+            price = _to_optional_float(vals[price_index])
+            volume_lots = _to_optional_float(vals[volume_index])
+            if price is None or price <= 0 or volume_lots is None or volume_lots < 0:
+                continue
+            levels.append(
+                {
+                    "position": position,
+                    "price": price,
+                    "volume_lots": volume_lots,
+                }
+            )
+        return levels
 
     @staticmethod
     def normalize_market_board_rows(rows: list[Mapping[str, object]]) -> list[dict]:

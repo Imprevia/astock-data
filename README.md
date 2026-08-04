@@ -8,7 +8,7 @@
 
 - 纯数据层：统一封装 A 股行情、市场广度、财务、新闻、资金流、龙虎榜、解禁、行业和概念板块数据。
 - 无 LLM/Agent 依赖：不会导入 `langchain`、`openai`、`anthropic`、`streamlit`、`fastapi` 等应用层或智能体依赖。
-- 结构化返回：25 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
+- 结构化返回：26 个公开 Python API 均返回 Pydantic 模型，不返回自由文本报告。
 - 严格边界：只做数据获取、校验、缓存、格式化和协议适配，不做买卖建议、不做组合管理、不做收益承诺。
 
 ## 安装
@@ -39,10 +39,10 @@ pip install -e ".[test]"
 
 ## Python API 用法
 
-推荐从 `astock_data.api` 导入公开接口。完整公开函数共 25 个：
+推荐从 `astock_data.api` 导入公开接口。完整公开函数共 26 个：
 
 - `resolve_ticker`
-- `get_stock_data`, `get_indicators`, `get_market_breadth`
+- `get_stock_data`, `get_indicators`, `get_market_breadth`, `get_order_book`
 - `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement`
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
@@ -91,7 +91,7 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 - `--format json|markdown|text`，默认 `json`
 - `--no-cache`，本次调用绕过真实缓存，使用临时缓存目录
 
-25 个子命令：
+26 个子命令：
 
 | 子命令 | 对应 Python API |
 |---|---|
@@ -99,6 +99,7 @@ astock-data kline 688017 --start 2026-05-01 --end 2026-05-12 --format json
 | `kline` | `get_stock_data` |
 | `indicator` | `get_indicators` |
 | `market-breadth` | `get_market_breadth` |
+| `order-book` | `get_order_book` |
 | `index-kline` | `get_index_kline` |
 | `stock-amount` | `get_stock_amount` |
 | `etf-daily` | `get_etf_daily` |
@@ -145,10 +146,10 @@ opencode/Claude Code 风格 MCP 配置片段：
 
 示例文件见 `examples/mcp_config.json`。不要配置 HTTP 或 SSE，本包当前决策是 stdio only。
 
-25 个 MCP tools：
+26 个 MCP tools：
 
 - `resolve_ticker`
-- `get_stock_data`, `get_indicators`, `get_market_breadth`
+- `get_stock_data`, `get_indicators`, `get_market_breadth`, `get_order_book`
 - `get_fundamentals`, `get_balance_sheet`, `get_cashflow`, `get_income_statement`
 - `get_news`, `get_global_news`
 - `get_insider_transactions`, `get_profit_forecast`, `get_hot_stocks`, `get_northbound_flow`
@@ -165,7 +166,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 | 来源 | 协议 | 主要数据 |
 |---|---|---|
 | mootdx | TCP 7709 | OHLCV K 线、财务快照、F10 文本、股票名称映射 |
-| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、市场广度指数兜底、个股成交额降级 |
+| 腾讯财经 | HTTP `qt.gtimg.cn` | PE、PB、市值、换手率、实时行情快照、五档盘口、市场广度指数兜底、个股成交额降级 |
 | 东方财富 | HTTP datacenter、dataapi、push2、push2his、np-weblist、search-api | 指数快照、全市场行情、龙虎榜、限售解禁、资金流、板块、个股信息、快讯 |
 | 新浪财经 | HTTP | K 线历史、财报三表、个股新闻兜底、市场广度二级兜底、指数K线降级、ETF K线降级 |
 | 同花顺 10jqka | HTTP | EPS 一致预期、热门股票题材、行业K线降级 |
@@ -185,6 +186,7 @@ opencode/Claude Code 风格 MCP 配置片段：
 |---|---|---|---|---|
 | market-breadth 指数 | 腾讯 | 新浪 | 东财push2 | — |
 | market-breadth 涨跌停 | 新浪分页 | 东财push2 clist | — | — |
+| order-book | 腾讯五档实时快照 | — | — | — |
 | index-kline | 东财push2his | 新浪K线 | mootdx | — |
 | stock-amount | 东财push2his | 腾讯quote | — | — |
 | etf-daily | 新浪K线 | 东财push2his | — | — |
@@ -192,6 +194,8 @@ opencode/Claude Code 风格 MCP 配置片段：
 | sector-strength | 东财push2 clist | SQLite缓存 | — | — |
 
 `etf-daily` 的行业 ETF 白名单覆盖 broad-market 既有代码，并新增软件 `515230`、计算机 `512720`、传媒 `512980`、通信 `515880`、机器人 `562500`、电子 `515260`、黄金 `518880`、游戏 `159869`、化工 `516020`、农业 `159825`。这些代码供下游做代表性行业行情代理，不表达精确 ETF 份额流入。
+
+`order-book` 返回腾讯可见的买卖五档，数量单位为手（1 手 = 100 股）。默认只请求一个快照；可通过 `--samples` 和 `--interval-seconds` 进行有界多次采样，单次调用的计划等待时间不超过 300 秒。同侧同价深度减少只标记为 `depth-decrease` / `unattributed`，价格进出五档只标记为 `entered-view` / `left-view`；这些变化不能证明精确撤单、订单身份或隐藏流动性。
 
 `sector-fund-flow-history` 的 `history_by_code` 始终保留真实逐日记录。有效 push2his 资金序列必须在日期过滤后至少包含一个非布尔 `int`/`float` 类型的 `main_net_inflow`；仅有空值、字符串或布尔值的 dated rows 不会阻止降级，也不会作为资金历史对外返回。仅当 `days == 5` 且新浪上证指数最新K线日期与目标日期完全一致时，服务才会通过一次 `getbkzj` 批量请求读取官方行业范围 `m:90+s:4` 的 `f164`，并把元单位累计值写入独立的 `five_day_main_net_inflow_by_code`。日期不匹配或不可校验时禁用 f164，避免把无日期参数的当前值错配给历史日期。`aggregate_only=True` 可跳过逐板块 push2his，只获取这份已校验的批量累计；它不会据此伪造五条日记录或正流入天数。
 

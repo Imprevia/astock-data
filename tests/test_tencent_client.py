@@ -89,6 +89,9 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
         "volume", "amount_wan", "turnover_pct", "pe_ttm", "mcap_yi", "float_mcap_yi", "pb",
         "limit_up", "limit_down", "pe_static",
     }
+    assert "bids" not in tech
+    assert "asks" not in tech
+    assert "vendor_timestamp" not in tech
     # Spot-check the contract values.
     assert tech["name"] == "FAKE_TECH"
     assert tech["price"] == pytest.approx(50.00)
@@ -132,6 +135,80 @@ def test_quote_parses_volume_and_amount_in_upstream_units(requests_mocker) -> No
 
     assert result["600584"]["volume"] == pytest.approx(2620385.0)
     assert result["600584"]["amount_wan"] == pytest.approx(2245466.0)
+
+
+def test_order_book_parses_five_levels_timestamp_and_lot_units(
+    requests_mocker,
+) -> None:
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sh688017",
+        content=_load_tencent_fixture(),
+    )
+
+    result = TencentClient().order_book("688017")
+
+    assert result["name"] == "FAKE_TECH"
+    assert result["vendor_timestamp"] == "20260804101530"
+    assert result["last_price"] == pytest.approx(50.0)
+    assert len(result["bids"]) == 5
+    assert len(result["asks"]) == 5
+    assert result["bids"][0] == {
+        "position": 1,
+        "price": 50.0,
+        "volume_lots": 100.0,
+    }
+    assert result["asks"][0] == {
+        "position": 1,
+        "price": 50.01,
+        "volume_lots": 600.0,
+    }
+    assert result["bid_depth_lots"] == pytest.approx(1500.0)
+    assert result["ask_depth_lots"] == pytest.approx(1600.0)
+    assert result["spread"] == pytest.approx(0.01)
+    assert result["imbalance"] == pytest.approx(-100 / 3100)
+
+
+def test_order_book_ignores_zero_price_and_malformed_single_levels(
+    requests_mocker,
+) -> None:
+    values = [""] * 53
+    values[1] = "FAKE_BANK"
+    values[2] = "000001"
+    values[3] = "10.00"
+    values[9:17] = ["0", "100", "9.99", "-1", "9.98", "bad", "9.97", "40"]
+    values[19:21] = ["10.01", "50"]
+    values[30] = "20260804101530"
+    payload = 'v_sz000001="' + "~".join(values) + '";'
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sz000001",
+        content=payload.encode("gbk"),
+    )
+
+    result = TencentClient().order_book("000001")
+
+    assert result["bids"] == [
+        {"position": 4, "price": 9.97, "volume_lots": 40.0}
+    ]
+    assert result["asks"] == [
+        {"position": 1, "price": 10.01, "volume_lots": 50.0}
+    ]
+
+
+def test_order_book_rejects_truncated_quote_payload(requests_mocker) -> None:
+    values = [""] * 31
+    values[1] = "FAKE_BANK"
+    values[2] = "000001"
+    values[3] = "10.00"
+    values[9:11] = ["9.99", "100"]
+    values[19:21] = ["10.01", "120"]
+    values[30] = "20260804101530"
+    payload = 'v_sz000001="' + "~".join(values) + '";'
+    requests_mocker.get(
+        "https://qt.gtimg.cn/q=sz000001",
+        content=payload.encode("gbk"),
+    )
+
+    assert TencentClient().order_book("000001") == {}
 
 
 def test_quote_uses_browser_headers(requests_mocker) -> None:
