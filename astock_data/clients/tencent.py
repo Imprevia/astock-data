@@ -70,6 +70,7 @@ _FIELD_INDEXES = {
     "price": 3,
     "last_close": 4,
     "open": 5,
+    "vendor_timestamp": 30,
     "change_pct": 32,
     "high": 33,
     "low": 34,
@@ -146,10 +147,11 @@ class TencentClient:
     def quote(self, codes: list[str]) -> dict[str, dict]:
         """Fetch and parse batch real-time quotes for ``codes``.
 
-        Returns a mapping ``{code: {name, price, last_close, open, change_pct,
-        high, low, volume, amount_wan, turnover_pct, pe_ttm, mcap_yi,
-        float_mcap_yi, pb, limit_up, limit_down, pe_static}}``. ``volume`` is
-        measured in lots and ``amount_wan`` in ten-thousand yuan.
+        Returns a mapping ``{code: {name, price, last_close, open,
+        vendor_timestamp, change_pct, high, low, volume, amount_wan,
+        turnover_pct, pe_ttm, mcap_yi, float_mcap_yi, pb, limit_up,
+        limit_down, pe_static}}``. ``volume`` is measured in lots and
+        ``amount_wan`` in ten-thousand yuan.
         """
         if not codes:
             return {}

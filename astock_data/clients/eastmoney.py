@@ -42,6 +42,9 @@ PUSH2HIS_BASE = "https://push2his.eastmoney.com"
 SEARCH_NEWS_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 FAST_NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
 GETBKZJ_URL = "https://data.eastmoney.com/dataapi/bkzj/getbkzj"
+CORE_CONCEPTION_URL = (
+    "https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax"
+)
 
 # Endpoint paths under the push2 / push2his hosts.
 PUSH2_FFLOW_KLINE_PATH = "/api/qt/stock/fflow/kline/get"
@@ -335,10 +338,21 @@ class EastmoneyClient:
         diff = data.get("diff")
         rows = [row for row in diff if isinstance(row, dict)] if isinstance(diff, list) else []
         total = data.get("total")
+        if isinstance(total, bool):
+            raise DataSourceError("Eastmoney clist returned an invalid total count")
         try:
-            total_count = int(float(total))
-        except (TypeError, ValueError):
-            total_count = len(rows)
+            numeric_total = float(total)
+        except (TypeError, ValueError) as exc:
+            raise DataSourceError(
+                "Eastmoney clist returned an invalid total count"
+            ) from exc
+        if not numeric_total.is_integer() or numeric_total <= 0:
+            raise DataSourceError("Eastmoney clist returned an invalid total count")
+        total_count = int(numeric_total)
+        if total_count < len(rows):
+            raise DataSourceError(
+                "Eastmoney clist total count is smaller than the returned row count"
+            )
         return rows, total_count
 
     def clist_all(
@@ -355,12 +369,18 @@ class EastmoneyClient:
         while True:
             page_rows, total = self.clist(page=page, page_size=page_size, fields=fields)
             if not page_rows:
+                if rows and len(rows) < total:
+                    raise DataSourceError(
+                        f"Eastmoney clist pagination ended early ({len(rows)}/{total})"
+                    )
                 break
             rows.extend(page_rows)
-            if total and len(rows) >= total:
+            if len(rows) == total:
                 break
-            if len(page_rows) < page_size:
-                break
+            if len(rows) > total:
+                raise DataSourceError(
+                    f"Eastmoney clist pagination exceeded total ({len(rows)}/{total})"
+                )
             page += 1
         return rows
 
@@ -486,50 +506,102 @@ class EastmoneyClient:
         return rows
 
     # ------------------------------------------------------------------
-    # Helper: concept/sector blocks for a stock (slist, migrated from Baidu PAE)
+    # Helper: concept/sector blocks for an individual stock.
     # ------------------------------------------------------------------
     def concept_blocks(self, code: str) -> list[dict]:
         """Return the concept/sector blocks a stock belongs to.
 
-        Migrated from the now-offline Baidu concept endpoint to the
-        Eastmoney ``push2`` ``slist`` endpoint. The caller
-        (``code``) is the bare 6-digit ticker; the market prefix is
-        derived per A-share conventions.
+        The individual-stock core-conception endpoint returns ordered
+        ``ssbk`` rows. Ranks 1-3 are industry classifications, rank 4 is the
+        regional board, and later ranks are concept or style memberships.
+        Only an explicit ``ssbk=[]`` is a successful empty response; malformed
+        envelopes and ranks are source errors because silently treating them as
+        empty would erase the distinction between "no memberships" and failure.
         """
 
-        market = "1" if str(code).startswith("6") else "0"
-        secid = f"{market}.{code}"
-        params = {
-            "spt": 3,
-            "fltt": 2,
-            "invt": 2,
-            "secid": secid,
-            "fields": "f12,f14,f3,f6,f128",
-            # slist returns the block membership list for the given secid.
-        }
-        url = f"{PUSH2_BASE}{PUSH2_SLIST_PATH}"
-        payload = self._get_json(url, params=params, headers=_PUSH2_DEFAULT_HEADERS)
-        data = payload.get("data") if isinstance(payload, Mapping) else None
-        diff = data.get("diff") if isinstance(data, Mapping) else None
-        if not isinstance(diff, list):
-            return []
+        market_prefix = (
+            "BJ"
+            if str(code).startswith(("920", "43", "8"))
+            else "SH"
+            if str(code).startswith(("5", "6", "9"))
+            else "SZ"
+        )
+        payload = self._get_json(
+            CORE_CONCEPTION_URL,
+            params={"code": f"{market_prefix}{code}"},
+            headers={
+                **_PUSH2_DEFAULT_HEADERS,
+                "Referer": f"https://emweb.securities.eastmoney.com/PC_HSF10/"
+                f"CoreConception/Index?type=web&code={market_prefix}{code}",
+            },
+        )
+        if not isinstance(payload, Mapping):
+            raise DataSourceError(
+                "Eastmoney core-conception response was not a JSON object"
+            )
+        if "ssbk" not in payload:
+            raise DataSourceError(
+                "Eastmoney core-conception response is missing ssbk"
+            )
+        rows = payload["ssbk"]
+        if not isinstance(rows, list):
+            raise DataSourceError(
+                "Eastmoney core-conception ssbk must be a list"
+            )
         blocks: list[dict] = []
-        for item in diff:
-            if not isinstance(item, dict):
-                continue
+        for index, item in enumerate(rows):
+            if not isinstance(item, Mapping):
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] must be an object"
+                )
+            raw_rank = item.get("BOARD_RANK")
+            if isinstance(raw_rank, bool):
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] has invalid BOARD_RANK"
+                )
+            if isinstance(raw_rank, int):
+                rank = raw_rank
+            elif isinstance(raw_rank, str) and raw_rank.strip().isdigit():
+                rank = int(raw_rank.strip())
+            else:
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] has invalid BOARD_RANK"
+                )
+            if rank < 1:
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] has invalid BOARD_RANK"
+                )
+            board_code = str(item.get("BOARD_CODE") or "").strip()
+            board_name = str(item.get("BOARD_NAME") or "").strip()
+            if not board_code:
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] is missing BOARD_CODE"
+                )
+            if not board_name:
+                raise DataSourceError(
+                    f"Eastmoney core-conception ssbk[{index}] is missing BOARD_NAME"
+                )
+            direction = (
+                "industry"
+                if rank <= 3
+                else "region"
+                if rank == 4
+                else "concept"
+            )
             blocks.append(
                 {
-                    "code": item.get("f12", ""),
-                    "name": item.get("f14", ""),
-                    "change_pct": item.get("f3"),
-                    "amount": item.get("f6"),
-                    "direction": item.get("f128", ""),
+                    "code": board_code,
+                    "name": board_name,
+                    "rank": rank,
+                    "direction": direction,
+                    "raw": dict(item),
                 }
             )
         return blocks
 
 
 __all__ = [
+    "CORE_CONCEPTION_URL",
     "DATACENTER_URL",
     "FAST_NEWS_URL",
     "PUSH2HIS_FFLOW_DAYKLINE_PATH",
@@ -757,6 +829,8 @@ def fetch_kline(
             "close":  <float | None>,
             "volume": <float | None>,  # 股数
             "amount": <float | None>,  # 成交额 (元, 原始单位, 不转亿)
+            "change_pct": <float | None>,
+            "turnover_pct": <float | None>,
         }
 
     ``secid`` is the full Eastmoney secid. Works for both stocks
@@ -774,7 +848,7 @@ def fetch_kline(
         "lmt": str(days),
         "end": "20500101",     # 远期上限，取最近 days 根
         "fields1": "f1,f2,f3,f4,f5,f6",
-        "fields2": "f51,f52,f53,f54,f55,f56,f57",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
     }
     url = f"{PUSH2HIS_BASE}{PUSH2HIS_KLINE_PATH}"
     payload = cli._get_json(url, params=params)
@@ -789,11 +863,12 @@ def fetch_kline(
         if not isinstance(line, str):
             continue
         parts = line.split(",")
-        # fields2=f51,f52,f53,f54,f55,f56,f57 对应:
+        # fields2=f51..f61 对应:
         #   date(f51), open(f52), close(f53), high(f54), low(f55),
-        #   volume(f56), amount(f57)
+        #   volume(f56), amount(f57), amplitude(f58), change_pct(f59),
+        #   change(f60), turnover_pct(f61)
         # 注意: close(f53) 在 high(f54) 前面, 列序固定不可搞反.
-        if len(parts) < 7:
+        if len(parts) < 11:
             continue
         rows.append(
             {
@@ -804,6 +879,8 @@ def fetch_kline(
                 "low": _float_or_none(parts[4]),
                 "volume": _float_or_none(parts[5]),
                 "amount": _float_or_none(parts[6]),
+                "change_pct": _float_or_none(parts[8]),
+                "turnover_pct": _float_or_none(parts[10]),
             }
         )
     return rows

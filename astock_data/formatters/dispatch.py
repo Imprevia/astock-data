@@ -418,14 +418,31 @@ def _market_breadth_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _market_breadth_limit_stats(data: dict[str, Any]) -> dict[str, Any]:
+    stats = data.get("limit_stats") or {}
+    return {
+        "status": stats.get("status") or "unavailable",
+        "limit_up_count": (
+            stats.get("limit_up_count")
+            if stats.get("limit_up_count") is not None
+            else "unavailable"
+        ),
+        "limit_down_count": (
+            stats.get("limit_down_count")
+            if stats.get("limit_down_count") is not None
+            else "unavailable"
+        ),
+    }
+
+
 def _market_breadth_markdown(result: BaseModel) -> str:
     data = _dump(result)
     body = [
-        *_markdown_section("Date", _markdown_pairs(data, ("date", "description"))),
+        *_markdown_section("Date", _markdown_pairs(data, ("date", "status", "description"))),
         "",
         *_markdown_section("Indices", _markdown_table(data.get("indices") or [], ("key", "name", "price", "change", "change_pct"))),
         "",
-        *_markdown_section("Limit Stats", _markdown_pairs(data.get("limit_stats") or {}, ("limit_up_count", "limit_down_count"))),
+        *_markdown_section("Limit Stats", _markdown_pairs(_market_breadth_limit_stats(data), ("status", "limit_up_count", "limit_down_count"))),
         "",
         *_markdown_section("Board Ladders", _markdown_table(_market_breadth_rows(data), ("boards", "code", "name", "close", "change_pct"))),
     ]
@@ -435,11 +452,11 @@ def _market_breadth_markdown(result: BaseModel) -> str:
 def _market_breadth_text(result: BaseModel) -> str:
     data = _dump(result)
     body = [
-        *_text_section("Date", _text_pairs(data, ("date", "description"))),
+        *_text_section("Date", _text_pairs(data, ("date", "status", "description"))),
         "",
         *_text_section("Indices", _text_table(data.get("indices") or [], ("key", "name", "price", "change", "change_pct"))),
         "",
-        *_text_section("Limit Stats", _text_pairs(data.get("limit_stats") or {}, ("limit_up_count", "limit_down_count"))),
+        *_text_section("Limit Stats", _text_pairs(_market_breadth_limit_stats(data), ("status", "limit_up_count", "limit_down_count"))),
         "",
         *_text_section("Board Ladders", _text_table(_market_breadth_rows(data), ("boards", "code", "name", "close", "change_pct"))),
     ]

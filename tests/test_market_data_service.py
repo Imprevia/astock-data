@@ -8,9 +8,11 @@ from astock_data.cache import CsvKlineCache
 from astock_data.config import AStockSettings
 from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.models import OHLCVBar, OrderBookResult, StockDataResult
+from astock_data.services import market_data
 from astock_data.services.market_data import (
     get_indicators,
     get_order_book,
+    get_stock_amount,
     get_stock_data,
 )
 
@@ -83,6 +85,46 @@ def _cache(tmp_cache_dir) -> CsvKlineCache:
 
 def _settings(tmp_cache_dir) -> AStockSettings:
     return AStockSettings(cache_dir=tmp_cache_dir, kline_cache_ttl_hours=12)
+
+
+def test_stock_amount_tencent_fallback_preserves_matching_quote_bar(monkeypatch) -> None:
+    def blocked_kline(*args, **kwargs):
+        raise DataSourceError("push2his blocked")
+
+    class FakeTencent:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def quote(self, codes: list[str]) -> dict[str, dict]:
+            assert codes == ["600809"]
+            return {
+                "600809": {
+                    "vendor_timestamp": "20260805150003",
+                    "open": 210.0,
+                    "high": 218.0,
+                    "low": 208.0,
+                    "price": 216.0,
+                    "volume": 123456.0,
+                    "amount_wan": 98765.0,
+                    "change_pct": 3.25,
+                    "turnover_pct": 1.85,
+                }
+            }
+
+    monkeypatch.setattr("astock_data.clients.eastmoney.fetch_kline", blocked_kline)
+    monkeypatch.setattr(market_data, "TencentClient", FakeTencent)
+
+    result = get_stock_amount("600809", days=10)
+
+    assert result.source == "tencent"
+    assert len(result.bars) == 1
+    bar = result.bars[0]
+    assert bar.date == "2026-08-05"
+    assert (bar.open, bar.high, bar.low, bar.close) == (210.0, 218.0, 208.0, 216.0)
+    assert bar.volume == 123456.0
+    assert bar.amount == 987_650_000.0
+    assert bar.change_pct == 3.25
+    assert bar.turnover_pct == 1.85
 
 
 def test_stock_data_returns_structured_sorted_bars_with_metadata(tmp_cache_dir) -> None:

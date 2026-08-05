@@ -253,6 +253,23 @@ def test_market_page_normalizes_rows(requests_mocker) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    "row, message",
+    [
+        ({"name": "缺少代码", "changepercent": "9.9"}, "missing a stock code"),
+        ({"symbol": "invalid", "changepercent": "9.9"}, "invalid stock code"),
+        ({"symbol": "sh600000", "changepercent": "-"}, "invalid change percentage"),
+        ({"symbol": "sh600000", "changepercent": "bad"}, "invalid change percentage"),
+        ({"symbol": "sh600000", "changepercent": "nan"}, "invalid change percentage"),
+    ],
+)
+def test_market_page_rejects_malformed_rows(requests_mocker, row, message) -> None:
+    requests_mocker.get(SinaClient.MARKET_CENTER_URL, json=[row])
+
+    with pytest.raises(DataSourceError, match=message):
+        SinaClient().market_page()
+
+
 # ---------------------------------------------------------------------------
 # financial_report
 # ---------------------------------------------------------------------------

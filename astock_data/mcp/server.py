@@ -190,10 +190,10 @@ def get_indicators(
 
 
 @mcp.tool()
-def get_market_breadth(date: str = "") -> dict[str, Any]:
+def get_market_breadth(date: str = "", fast: bool = False) -> dict[str, Any]:
     """Fetch market breadth: fixed index snapshots, limit counts, and board ladders."""
     try:
-        return _serialize(api.get_market_breadth(date))
+        return _serialize(api.get_market_breadth(date, fast=fast))
     except AStockDataError as exc:
         return _error_payload(exc)
 

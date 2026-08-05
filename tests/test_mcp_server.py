@@ -526,6 +526,22 @@ def test_main_guard_does_not_run_on_import():
     assert True
 
 
+def test_market_breadth_fast_option_routes_to_api(monkeypatch) -> None:
+    seen: list[tuple[str, bool]] = []
+
+    def fake_market_breadth(date: str, *, fast: bool = False):
+        seen.append((date, fast))
+        return {"source": "stub"}
+
+    monkeypatch.setattr("astock_data.api.get_market_breadth", fake_market_breadth)
+    server = _server_module()
+
+    result = server.get_market_breadth("2026-05-12", True)
+
+    assert result == {"source": "stub"}
+    assert seen == [("2026-05-12", True)]
+
+
 # ---------------------------------------------------------------------------
 # utilities
 # ---------------------------------------------------------------------------

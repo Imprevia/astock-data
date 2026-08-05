@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import math
 from collections import defaultdict
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from astock_data.clients.eastmoney import EastmoneyClient
@@ -31,10 +33,28 @@ _DERIVED_WARNING = "board_ladders are derived from K-line threshold rules and ma
 _BOARD_SKIP_WARNING = "board_ladders skipped because no current limit-up stock set was available"
 _SUPPORTED_KLINE_PREFIXES = ("0", "3", "4", "6", "8", "9")
 _DEFAULT_LOOKBACK_DAYS = 20
+_FAST_CLIST_PAGE_SIZE = 6000
+_FAST_SINA_PAGE_SIZE = 80
+_FAST_SINA_MAX_PAGES = 20
+_MIN_LIMIT_THRESHOLD = 4.8
+
+
+@dataclass(frozen=True)
+class _LimitRowsResult:
+    """Rows plus per-side completeness needed to avoid fabricated zero counts."""
+
+    rows: list[dict]
+    source: str | None
+    limit_up_available: bool
+    limit_down_available: bool
 
 
 def _now() -> dt.datetime:
     return dt.datetime.now(tz=dt.UTC)
+
+
+def _local_today() -> dt.date:
+    return dt.datetime.now().astimezone().date()
 
 
 def _target_date(date: str) -> dt.date:
@@ -58,9 +78,10 @@ def _to_float(value: Any) -> float | None:
     if value in (None, "", "-"):
         return None
     try:
-        return float(value)
+        result = float(value)
     except (TypeError, ValueError):
         return None
+    return result if math.isfinite(result) else None
 
 
 def _row_code(row: Mapping[str, Any]) -> str:
@@ -81,6 +102,23 @@ def _row_close(row: Mapping[str, Any]) -> float | None:
 
 def _row_amount(row: Mapping[str, Any]) -> float | None:
     return _to_float(row.get("f6") if "f6" in row else row.get("amount"))
+
+
+def _validate_limit_rows(rows: list[dict], source: str) -> None:
+    """Reject rows that cannot support a factual per-direction limit count."""
+
+    for index, row in enumerate(rows):
+        if not isinstance(row, Mapping):
+            raise DataSourceError(f"{source} row {index} is not an object")
+        code = _row_code(row)
+        if not code:
+            raise DataSourceError(f"{source} row {index} is missing a stock code")
+        if len(code) != 6 or not code.isdigit():
+            raise DataSourceError(f"{source} row {index} has an invalid stock code")
+        if _row_change_pct(row) is None:
+            raise DataSourceError(
+                f"{source} row {index} has an invalid change percentage"
+            )
 
 
 def _threshold(code: str, name: str) -> float:
@@ -165,6 +203,8 @@ def _fetch_indices_with_fallbacks(
         try:
             indices = _snapshots_from_mapping(fetch())
             if len(indices) == len(_INDEX_SECIDS):
+                for failed, exc in failures:
+                    warnings.append(_fallback_warning("indices", failed, source, exc))
                 return indices, source
             raise DataSourceError(f"{source} index source returned incomplete rows")
         except Exception as exc:
@@ -190,17 +230,15 @@ def _fetch_limit_rows_with_fallbacks(
     eastmoney: EastmoneyClient,
     sina: SinaClient,
     warnings: list[str],
-) -> tuple[list[dict], str | None]:
+) -> _LimitRowsResult:
     # 新浪优先，东财push2被封概率最高放最后。
     failures: list[tuple[str, Exception]] = []
 
     try:
         rows = sina.market_all()
         if rows:
-            warnings.append(
-                "limit_stats used Sina market pagination as primary source"
-            )
-            return rows, "sina"
+            _validate_limit_rows(rows, "Sina market pagination")
+            return _LimitRowsResult(rows, "sina", True, True)
         raise DataSourceError("Sina market pagination returned no rows")
     except Exception as exc:
         failures.append(("sina", exc))
@@ -209,22 +247,214 @@ def _fetch_limit_rows_with_fallbacks(
     try:
         rows = eastmoney.clist_all(fields="f12,f14,f2,f3,f6,f8")
         if rows:
+            _validate_limit_rows(rows, "Eastmoney clist")
             for failed, exc in failures:
                 warnings.append(_fallback_warning("limit_stats", failed, "eastmoney", exc))
-            return rows, "eastmoney"
+            return _LimitRowsResult(rows, "eastmoney", True, True)
         raise DataSourceError("Eastmoney clist returned no rows")
     except Exception as exc:
         failures.append(("eastmoney", exc))
 
     for source, exc in failures:
         warnings.append(_failure_warning("limit_stats", source, exc))
-    return [], None
+    return _LimitRowsResult([], None, False, False)
 
 
-def _count_limits(rows: list[dict]) -> LimitStats:
+def _sina_extreme_rows(
+    sina: SinaClient,
+    *,
+    ascending: bool,
+    warnings: list[str],
+) -> tuple[list[dict], bool]:
+    """Fetch one sorted extreme at a time until rows leave every limit band."""
+
+    rows: list[dict] = []
+    direction = "losers" if ascending else "gainers"
+    predicate = _is_limit_down if ascending else _is_limit_up
+    try:
+        for page in range(1, _FAST_SINA_MAX_PAGES + 1):
+            page_rows = sina.market_page(
+                page=page,
+                page_size=_FAST_SINA_PAGE_SIZE,
+                sort_field="changepercent",
+                ascending=ascending,
+            )
+            if not page_rows:
+                if page == 1:
+                    warnings.append(
+                        _failure_warning(
+                            f"limit_stats {direction}",
+                            "sina",
+                            DataSourceError("first extreme page returned no rows"),
+                        )
+                    )
+                    return [], False
+                return rows, True
+            _validate_limit_rows(page_rows, f"Sina {direction} page {page}")
+            rows.extend(row for row in page_rows if predicate(row))
+            last_pct = _row_change_pct(page_rows[-1])
+            if ascending:
+                outside_threshold = last_pct > -_MIN_LIMIT_THRESHOLD
+            else:
+                outside_threshold = last_pct < _MIN_LIMIT_THRESHOLD
+            if outside_threshold or len(page_rows) < _FAST_SINA_PAGE_SIZE:
+                return rows, True
+        warnings.append(
+            f"fast Sina {direction} pagination reached {_FAST_SINA_MAX_PAGES} pages"
+        )
+        return rows, False
+    except Exception as exc:  # noqa: BLE001 - the opposite extreme remains usable
+        warnings.append(_failure_warning(f"limit_stats {direction}", "sina", exc))
+        return rows, False
+
+
+def _fetch_fast_limit_rows(
+    eastmoney: EastmoneyClient,
+    sina: SinaClient,
+    warnings: list[str],
+) -> _LimitRowsResult:
+    """Prefer one complete clist response, then bounded Sina extremes."""
+
+    try:
+        rows, total = eastmoney.clist(
+            page=1,
+            page_size=_FAST_CLIST_PAGE_SIZE,
+            fields="f12,f14,f2,f3,f6,f8",
+        )
+        if rows and total == len(rows):
+            _validate_limit_rows(rows, "Eastmoney clist")
+            return _LimitRowsResult(rows, "eastmoney.clist", True, True)
+        if rows:
+            raise DataSourceError(
+                f"Eastmoney clist returned partial rows ({len(rows)}/{total})"
+            )
+        raise DataSourceError("Eastmoney clist returned no rows")
+    except Exception as exc:  # noqa: BLE001 - bounded Sina extremes are the fallback
+        warnings.append(
+            _fallback_warning("limit_stats", "eastmoney.clist", "sina.extremes", exc)
+        )
+
+    gainers, gainers_succeeded = _sina_extreme_rows(
+        sina,
+        ascending=False,
+        warnings=warnings,
+    )
+    losers, losers_succeeded = _sina_extreme_rows(
+        sina,
+        ascending=True,
+        warnings=warnings,
+    )
+    if not gainers_succeeded and not losers_succeeded:
+        return _LimitRowsResult([], None, False, False)
+
+    by_code: dict[str, dict] = {}
+    for row in [*gainers, *losers]:
+        code = _row_code(row)
+        if code:
+            by_code[code] = row
+    warnings.append(
+        "limit_stats used bounded Sina changepercent extremes; full-market rows were not scanned"
+    )
+    return _LimitRowsResult(
+        list(by_code.values()),
+        "sina.extremes",
+        gainers_succeeded,
+        losers_succeeded,
+    )
+
+
+def _count_limits(result: _LimitRowsResult) -> LimitStats:
+    if result.limit_up_available and result.limit_down_available:
+        status = "available"
+    elif result.limit_up_available or result.limit_down_available:
+        status = "partial"
+    else:
+        status = "unavailable"
     return LimitStats(
-        limit_up_count=sum(1 for row in rows if _is_limit_up(row)),
-        limit_down_count=sum(1 for row in rows if _is_limit_down(row)),
+        limit_up_count=(
+            sum(1 for row in result.rows if _is_limit_up(row))
+            if result.limit_up_available
+            else None
+        ),
+        limit_down_count=(
+            sum(1 for row in result.rows if _is_limit_down(row))
+            if result.limit_down_available
+            else None
+        ),
+        status=status,
+    )
+
+
+def _verify_snapshot_date(
+    sina: SinaClient,
+    target: dt.date,
+    warnings: list[str],
+) -> tuple[str | None, str]:
+    """Match every requested session to the latest vendor daily snapshot."""
+
+    today = _local_today()
+    if target > today:
+        warnings.append(
+            f"market breadth target {target.isoformat()} is in the future"
+        )
+        return None, "future-date"
+    try:
+        rows = sina.index_kline("sh000001", datalen=1)
+        snapshot_date = str(rows[-1].get("date") or "") if rows else ""
+    except Exception as exc:  # noqa: BLE001 - unavailable verification is explicit
+        warnings.append(f"market breadth snapshot date verification failed: {exc}")
+        return None, "unavailable"
+
+    if snapshot_date != target.isoformat():
+        warnings.append(
+            "market breadth snapshot date "
+            f"{snapshot_date or 'unknown'} does not match target {target.isoformat()}"
+        )
+        return snapshot_date or None, "mismatch"
+    return snapshot_date, "verified"
+
+
+def _unavailable_snapshot_result(
+    target: dt.date,
+    *,
+    fast: bool,
+    warnings: list[str],
+    snapshot_date: str | None,
+    snapshot_date_status: str,
+) -> MarketBreadthResult:
+    """Return a structured absence instead of relabeling a live snapshot."""
+
+    warnings.append(
+        "market breadth unavailable because the requested session could not be "
+        "matched to the current snapshot"
+    )
+    return MarketBreadthResult(
+        source="unavailable",
+        retrieved_at=_now(),
+        status="unavailable",
+        date=target.isoformat(),
+        indices=[],
+        limit_stats=LimitStats(
+            limit_up_count=None,
+            limit_down_count=None,
+            status="unavailable",
+        ),
+        board_ladders={},
+        limit_down_rows=[],
+        description="Market breadth is unavailable for an unverified target session.",
+        warnings=warnings,
+        raw={
+            "sources": {
+                "indices": None,
+                "limit_stats": None,
+                "board_ladders": None,
+            },
+            "limit_row_count": 0,
+            "market_amount": None,
+            "fast": fast,
+            "snapshot_date": snapshot_date,
+            "snapshot_date_status": snapshot_date_status,
+        },
     )
 
 
@@ -359,6 +589,7 @@ def _derive_board_ladders(
 
 def get_market_breadth(
     date: str = "",
+    fast: bool = False,
     *,
     eastmoney: EastmoneyClient | None = None,
     tencent: TencentClient | None = None,
@@ -369,22 +600,49 @@ def get_market_breadth(
     client = eastmoney or EastmoneyClient(timeout=3.0, max_retries=0)
     tencent_client = tencent or TencentClient()
     sina_client = sina or SinaClient()
-    warnings = [_DERIVED_WARNING]
+    warnings: list[str] = []
 
-    indices, index_source = _fetch_indices_with_fallbacks(
-        client, tencent_client, sina_client, warnings
-    )
-    rows, row_source = _fetch_limit_rows_with_fallbacks(client, sina_client, warnings)
-    if index_source is None and row_source is None:
-        raise DataSourceError("All market breadth index and full-market quote sources failed")
-
-    market_amount = _verified_market_amount(
-        rows,
-        row_source,
+    snapshot_date, snapshot_date_status = _verify_snapshot_date(
         sina_client,
         target,
         warnings,
     )
+    if snapshot_date_status in {"future-date", "unavailable", "mismatch"}:
+        return _unavailable_snapshot_result(
+            target,
+            fast=fast,
+            warnings=warnings,
+            snapshot_date=snapshot_date,
+            snapshot_date_status=snapshot_date_status,
+        )
+
+    indices, index_source = _fetch_indices_with_fallbacks(
+        client, tencent_client, sina_client, warnings
+    )
+    limit_rows = (
+        _fetch_fast_limit_rows(client, sina_client, warnings)
+        if fast
+        else _fetch_limit_rows_with_fallbacks(client, sina_client, warnings)
+    )
+    rows = limit_rows.rows
+    row_source = limit_rows.source
+    limit_stats = _count_limits(limit_rows)
+    if index_source is None and limit_stats.status == "unavailable":
+        raise DataSourceError("All market breadth index and full-market quote sources failed")
+
+    if fast:
+        market_amount = None
+        warnings.append(
+            "fast mode skipped the date-verified full-market amount scan"
+        )
+    else:
+        market_amount = _verified_market_amount(
+            rows,
+            row_source,
+            sina_client,
+            target,
+            warnings,
+        )
 
     hot_reasons: Mapping[str, str] | None = None
     try:
@@ -399,7 +657,7 @@ def get_market_breadth(
     except Exception as exc:  # noqa: BROAD_EXCEPT_OK - reason enrichment is best-effort
         warnings.append(f"hot_stocks reason enrichment skipped: {exc}")
 
-    if rows and _has_limit_up_rows(rows):
+    if limit_rows.limit_up_available and rows and _has_limit_up_rows(rows):
         board_ladders = _derive_board_ladders(
             rows,
             target,
@@ -407,23 +665,44 @@ def get_market_breadth(
             warnings,
             hot_reasons=hot_reasons,
         )
-        board_source = "derived.kline.threshold"
+        if board_ladders:
+            warnings.append(_DERIVED_WARNING)
+            board_source = "derived.kline.threshold"
+        else:
+            warnings.append(_BOARD_SKIP_WARNING)
+            board_source = None
     else:
         warnings.append(_BOARD_SKIP_WARNING)
         board_ladders = {}
         board_source = None
 
+    status = (
+        "available"
+        if index_source is not None and limit_stats.status == "available"
+        else "partial"
+    )
     return MarketBreadthResult(
-        source=(
-            "market-breadth:fallback"
-            if index_source != "eastmoney" or row_source != "eastmoney"
-            else "eastmoney+derived"
+        source="+".join(
+            dict.fromkeys(
+                source
+                for source in (
+                    index_source,
+                    row_source,
+                    "derived" if board_source else None,
+                )
+                if source
+            )
         ),
         retrieved_at=_now(),
+        status=status,
         date=target.isoformat(),
         indices=indices,
-        limit_stats=_count_limits(rows),
-        limit_down_rows=_collect_limit_down_rows(rows),
+        limit_stats=limit_stats,
+        limit_down_rows=(
+            _collect_limit_down_rows(rows)
+            if limit_rows.limit_down_available
+            else []
+        ),
         board_ladders=board_ladders,
         description="Market breadth snapshot with fixed-index quotes, limit counts, and derived board ladders.",
         warnings=warnings,
@@ -435,6 +714,9 @@ def get_market_breadth(
             },
             "limit_row_count": len(rows),
             "market_amount": market_amount,
+            "fast": fast,
+            "snapshot_date": snapshot_date,
+            "snapshot_date_status": snapshot_date_status,
         },
     )
 

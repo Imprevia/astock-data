@@ -94,6 +94,56 @@ def test_output_includes_source_and_retrieved_at() -> None:
     assert "retrieved_at: 2026-06-17T12:00:00Z" in text
 
 
+@pytest.mark.parametrize("formatter_name", ["to_markdown", "to_text"])
+def test_market_breadth_formatter_preserves_partial_status(formatter_name) -> None:
+    from astock_data import formatters
+
+    result = MarketBreadthResult(
+        source="sina.extremes",
+        retrieved_at=RETRIEVED_AT,
+        status="partial",
+        date="2026-06-17",
+        indices=[],
+        limit_stats=LimitStats(
+            status="partial",
+            limit_up_count=3,
+            limit_down_count=None,
+        ),
+        board_ladders={},
+    )
+
+    rendered = getattr(formatters, formatter_name)(result)
+
+    assert rendered.count("status: partial") >= 2
+    assert "limit_up_count: 3" in rendered
+    assert "limit_down_count: unavailable" in rendered
+
+
+@pytest.mark.parametrize("formatter_name", ["to_markdown", "to_text"])
+def test_market_breadth_formatter_preserves_unavailable_counts(formatter_name) -> None:
+    from astock_data import formatters
+
+    result = MarketBreadthResult(
+        source="tencent",
+        retrieved_at=RETRIEVED_AT,
+        status="unavailable",
+        date="2026-06-17",
+        indices=[],
+        limit_stats=LimitStats(
+            status="unavailable",
+            limit_up_count=None,
+            limit_down_count=None,
+        ),
+        board_ladders={},
+    )
+
+    rendered = getattr(formatters, formatter_name)(result)
+
+    assert rendered.count("status: unavailable") >= 2
+    assert "limit_up_count: unavailable" in rendered
+    assert "limit_down_count: unavailable" in rendered
+
+
 def test_stockdata_markdown_contains_ohlcv_table_header() -> None:
     from astock_data.formatters import to_markdown, to_text
 

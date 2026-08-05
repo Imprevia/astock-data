@@ -318,7 +318,19 @@ def test_stock_amount_falls_back_to_tencent_when_eastmoney_fails(monkeypatch):
 
         def quote(self, codes):
             assert codes == ["600584"]
-            return {"600584": {"amount_wan": 2245466.0}}
+            return {
+                "600584": {
+                    "vendor_timestamp": "20260722150000",
+                    "open": 84.0,
+                    "high": 86.0,
+                    "low": 83.5,
+                    "price": 85.78,
+                    "volume": 2620385.0,
+                    "amount_wan": 2245466.0,
+                    "change_pct": 2.1,
+                    "turnover_pct": 3.5,
+                }
+            }
 
     monkeypatch.setattr(_em, "fetch_kline", _eastmoney_failure)
     from astock_data.services import market_data as _md
@@ -335,7 +347,9 @@ def test_stock_amount_falls_back_to_tencent_when_eastmoney_fails(monkeypatch):
     assert len(result.bars) == 1
     assert result.bars[0].date == "2026-07-22"
     assert result.bars[0].amount == pytest.approx(22454660000.0)
-    assert "used Tencent quote for stock amount (push2his blocked)" in result.warnings
+    assert result.bars[0].change_pct == pytest.approx(2.1)
+    assert result.bars[0].turnover_pct == pytest.approx(3.5)
+    assert any("matching-date Tencent quote" in warning for warning in result.warnings)
 
 
 def test_stock_amount_returns_empty_when_eastmoney_and_tencent_fail(monkeypatch):

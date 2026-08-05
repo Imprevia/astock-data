@@ -34,6 +34,8 @@ class KlineBar(BaseModel):
     close: float | None = None
     volume: float | None = None
     amount: float | None = None
+    change_pct: float | None = None
+    turnover_pct: float | None = None
 
     @field_validator("date", mode="before")
     @classmethod
@@ -146,8 +148,9 @@ class IndexSnapshot(BaseModel):
 
 
 class LimitStats(BaseModel):
-    limit_up_count: int
-    limit_down_count: int
+    limit_up_count: int | None
+    limit_down_count: int | None
+    status: Literal["available", "partial", "unavailable"] = "available"
 
 
 class BoardItem(BaseModel):
@@ -167,6 +170,7 @@ class LimitDownItem(BaseModel):
 
 
 class MarketBreadthResult(ResultBase):
+    status: Literal["available", "partial", "unavailable"] = "available"
     date: str
     indices: list[IndexSnapshot]
     limit_stats: LimitStats

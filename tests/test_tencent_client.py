@@ -85,13 +85,13 @@ def test_quote_parses_gbk_fixture(requests_mocker) -> None:
     tech = result["688017"]
     # Contract field keys are all present.
     assert set(tech.keys()) == {
-        "name", "price", "last_close", "open", "change_pct", "high", "low",
+        "name", "price", "last_close", "open", "vendor_timestamp", "change_pct", "high", "low",
         "volume", "amount_wan", "turnover_pct", "pe_ttm", "mcap_yi", "float_mcap_yi", "pb",
         "limit_up", "limit_down", "pe_static",
     }
     assert "bids" not in tech
     assert "asks" not in tech
-    assert "vendor_timestamp" not in tech
+    assert tech["vendor_timestamp"] == "20260804101530"
     # Spot-check the contract values.
     assert tech["name"] == "FAKE_TECH"
     assert tech["price"] == pytest.approx(50.00)

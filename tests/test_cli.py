@@ -326,3 +326,19 @@ def test_each_command_routes_to_facade():
             result = runner.invoke(app, argv)
         assert patched.called, f"{fn_name} not called for {argv}"
         assert result.exit_code == 0, f"{argv} failed: {result.stderr or result.output}"
+
+
+def test_market_breadth_fast_option_routes_to_facade() -> None:
+    generic_result = _fake_stock_data_result()
+    with mock.patch.object(
+        cli_module.api,
+        "get_market_breadth",
+        return_value=generic_result,
+    ) as patched:
+        result = runner.invoke(
+            app,
+            ["market-breadth", "--date", "2026-05-12", "--fast"],
+        )
+
+    assert result.exit_code == 0, result.stderr or result.output
+    patched.assert_called_once_with("2026-05-12", fast=True)

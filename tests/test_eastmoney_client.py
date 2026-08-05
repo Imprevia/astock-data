@@ -380,6 +380,32 @@ def test_clist_parses_page_rows_and_total(requests_mocker, client):
     assert last.qs["fields"] == ["f12,f14"]
 
 
+@pytest.mark.parametrize("total", [None, "bad", 0, -1, 1.5, True])
+def test_clist_rejects_invalid_total(requests_mocker, client, total):
+    requests_mocker.get(
+        em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH,
+        json={"data": {"total": total, "diff": [{"f12": "000001"}]}},
+    )
+
+    with pytest.raises(DataSourceError, match="invalid total count"):
+        client.clist()
+
+
+def test_clist_rejects_total_smaller_than_returned_rows(requests_mocker, client):
+    requests_mocker.get(
+        em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH,
+        json={
+            "data": {
+                "total": 1,
+                "diff": [{"f12": "000001"}, {"f12": "000002"}],
+            }
+        },
+    )
+
+    with pytest.raises(DataSourceError, match="smaller than the returned row count"):
+        client.clist()
+
+
 def test_clist_all_paginates_until_total(requests_mocker, client):
     url = em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH
     requests_mocker.get(
@@ -394,6 +420,20 @@ def test_clist_all_paginates_until_total(requests_mocker, client):
 
     assert [row["f12"] for row in rows] == ["000001", "000002", "000003"]
     assert len(requests_mocker.request_history) >= 2
+
+
+def test_clist_all_rejects_truncated_pagination(requests_mocker, client):
+    url = em_module.PUSH2_BASE + em_module.PUSH2_CLIST_PATH
+    requests_mocker.get(
+        url,
+        [
+            {"json": {"data": {"total": 3, "diff": [{"f12": "000001"}]}}},
+            {"json": {"data": {"total": 3, "diff": []}}},
+        ],
+    )
+
+    with pytest.raises(DataSourceError, match="pagination ended early"):
+        client.clist_all(page_size=2, fields="f12")
 
 
 # ---------------------------------------------------------------------------
@@ -487,41 +527,141 @@ def test_fast_news_page_returns_and_forwards_vendor_cursor(requests_mocker, clie
 
 
 # ---------------------------------------------------------------------------
-# concept_blocks helper — asserts it calls EASTMONEY slist, NOT baidu.
+# concept_blocks helper — individual-stock core-conception endpoint.
 # ---------------------------------------------------------------------------
-def test_concept_blocks_hits_eastmoney_slist_not_baidu(requests_mocker, client):
+def test_concept_blocks_parses_ordered_core_conception_membership(requests_mocker, client):
     payload = {
-        "data": {
-            "diff": [
-                {"f12": "BK0473", "f14": "半导体概念", "f3": 2.11, "f6": 9.9e9, "f128": "板块"},
-            ]
-        }
+        "ssbk": [
+            {"BOARD_CODE": "438", "BOARD_NAME": "食品饮料", "BOARD_RANK": 1},
+            {"BOARD_CODE": "167", "BOARD_NAME": "山西板块", "BOARD_RANK": 4},
+            {"BOARD_CODE": "1711", "BOARD_NAME": "消费风格", "BOARD_RANK": 5},
+        ]
     }
     requests_mocker.get(
-        em_module.PUSH2_BASE + em_module.PUSH2_SLIST_PATH,
+        em_module.CORE_CONCEPTION_URL,
         json=payload,
     )
 
-    blocks = client.concept_blocks("688017")
+    blocks = client.concept_blocks("600809")
 
-    assert len(blocks) == 1
-    assert blocks[0]["code"] == "BK0473"
-    assert blocks[0]["name"] == "半导体概念"
+    assert [block["name"] for block in blocks] == ["食品饮料", "山西板块", "消费风格"]
+    assert [block["direction"] for block in blocks] == ["industry", "region", "concept"]
+    assert blocks[0]["raw"]["BOARD_RANK"] == 1
 
     requested = requests_mocker.request_history[-1].url
     assert "eastmoney.com" in requested
     assert "baidu.com" not in requested
-    # SH-listed (688017 → market 1).
-    assert requests_mocker.request_history[-1].qs["secid"] == ["1.688017"]
+    assert requests_mocker.request_history[-1].qs["code"] == ["sh600809"]
 
 
 def test_concept_blocks_sz_market_prefix(requests_mocker, client):
     requests_mocker.get(
-        em_module.PUSH2_BASE + em_module.PUSH2_SLIST_PATH,
-        json={"data": {"diff": []}},
+        em_module.CORE_CONCEPTION_URL,
+        json={"ssbk": []},
     )
-    client.concept_blocks("000001")
-    assert requests_mocker.request_history[-1].qs["secid"] == ["0.000001"]
+    client.concept_blocks("002230")
+    assert requests_mocker.request_history[-1].qs["code"] == ["sz002230"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, "missing ssbk"),
+        ({"ssbk": None}, "ssbk must be a list"),
+        ({"ssbk": {}}, "ssbk must be a list"),
+        (
+            {
+                "ssbk": [
+                    {
+                        "BOARD_CODE": "1711",
+                        "BOARD_NAME": "消费风格",
+                        "BOARD_RANK": "invalid",
+                    }
+                ]
+            },
+            "invalid BOARD_RANK",
+        ),
+        (
+            {
+                "ssbk": [
+                    {
+                        "BOARD_CODE": "",
+                        "BOARD_NAME": "消费风格",
+                        "BOARD_RANK": 5,
+                    }
+                ]
+            },
+            "missing BOARD_CODE",
+        ),
+        (
+            {
+                "ssbk": [
+                    {
+                        "BOARD_CODE": "1711",
+                        "BOARD_NAME": "",
+                        "BOARD_RANK": 5,
+                    }
+                ]
+            },
+            "missing BOARD_NAME",
+        ),
+        (
+            {
+                "ssbk": [
+                    {
+                        "BOARD_CODE": "1711",
+                        "BOARD_NAME": "消费风格",
+                        "BOARD_RANK": True,
+                    }
+                ]
+            },
+            "invalid BOARD_RANK",
+        ),
+        (
+            {
+                "ssbk": [
+                    {
+                        "BOARD_CODE": "1711",
+                        "BOARD_NAME": "消费风格",
+                        "BOARD_RANK": 1.5,
+                    }
+                ]
+            },
+            "invalid BOARD_RANK",
+        ),
+    ],
+)
+def test_concept_blocks_rejects_malformed_success_payloads(
+    requests_mocker,
+    client,
+    payload,
+    message,
+):
+    requests_mocker.get(em_module.CORE_CONCEPTION_URL, json=payload)
+
+    with pytest.raises(DataSourceError, match=message):
+        client.concept_blocks("600809")
+
+
+def test_fetch_kline_parses_change_and_turnover_metrics(requests_mocker, client):
+    requests_mocker.get(
+        em_module.PUSH2HIS_BASE + em_module.PUSH2HIS_KLINE_PATH,
+        json={
+            "data": {
+                "klines": [
+                    "2026-08-05,10.0,10.8,11.0,9.9,12345,678900,10.0,8.0,0.8,12.3"
+                ]
+            }
+        },
+    )
+
+    rows = em_module.fetch_kline("1.600809", days=1, client=client)
+
+    assert rows[0]["change_pct"] == 8.0
+    assert rows[0]["turnover_pct"] == 12.3
+    assert requests_mocker.request_history[-1].qs["fields2"] == [
+        "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -28,9 +28,9 @@ class FakeEastmoney:
     def concept_blocks(self, code: str) -> list[dict[str, Any]]:
         self.calls.append(("concept_blocks", (code,), {}))
         return [
-            {"name": "人工智能", "change_pct": 1.2, "direction": "概念"},
-            {"name": "申万计算机行业", "change_pct": 0.8},
-            {"name": "广东省", "change_pct": -0.1},
+            {"name": "计算机", "rank": 1, "direction": "industry"},
+            {"name": "广东板块", "rank": 4, "direction": "region"},
+            {"name": "人工智能", "rank": 5, "direction": "concept"},
         ]
 
     def push2(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -100,7 +100,7 @@ def _all_call_text(fake: FakeEastmoney) -> str:
     return repr(fake.calls)
 
 
-def test_concept_blocks_use_eastmoney_slist_not_baidu() -> None:
+def test_concept_blocks_use_eastmoney_core_conception_not_baidu() -> None:
     fake = FakeEastmoney()
 
     result = get_concept_blocks("SH600000", eastmoney=fake)
@@ -108,12 +108,31 @@ def test_concept_blocks_use_eastmoney_slist_not_baidu() -> None:
     assert fake.calls[0][0] == "concept_blocks"
     assert fake.calls[0][1] == ("600000",)
     assert "finance.pae.baidu" not in _all_call_text(fake)
-    assert result.source == "eastmoney slist"
+    assert result.source == "eastmoney core-conception"
     assert isinstance(result.retrieved_at, dt.datetime)
     assert result.ticker == "600000"
     assert result.concept_tags == ["人工智能"]
-    assert result.industries[0].name == "申万计算机行业"
-    assert result.regions[0].name == "广东省"
+    assert result.industries[0].name == "计算机"
+    assert result.regions[0].name == "广东板块"
+
+
+def test_concept_blocks_use_rank_direction_without_name_heuristics() -> None:
+    fake = FakeEastmoney()
+    original = fake.concept_blocks
+
+    def concept_blocks(code: str) -> list[dict[str, Any]]:
+        rows = original(code)
+        rows.append(
+            {"name": "北京市", "rank": 5, "direction": "concept"}
+        )
+        return rows
+
+    fake.concept_blocks = concept_blocks  # type: ignore[method-assign]
+
+    result = get_concept_blocks("SH600000", eastmoney=fake)
+
+    assert "北京市" in result.concept_tags
+    assert all(item.name != "北京市" for item in result.regions)
 
 
 def test_fund_flow_minute_history_and_factual_signal() -> None:
@@ -146,10 +165,49 @@ def test_fund_flow_can_skip_history() -> None:
     assert fake.calls[0][1][1]["secid"] == "0.000001"
 
 
+@pytest.mark.parametrize(
+    ("minute_fails", "daily_fails", "minute_count", "daily_count", "signal"),
+    [
+        (True, False, 0, 1, None),
+        (False, True, 2, 0, "OUTFLOW"),
+        (True, True, 0, 0, None),
+    ],
+)
+def test_fund_flow_capabilities_fail_independently(
+    minute_fails: bool,
+    daily_fails: bool,
+    minute_count: int,
+    daily_count: int,
+    signal: str | None,
+) -> None:
+    class PartialEastmoney(FakeEastmoney):
+        def push2(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+            if minute_fails:
+                raise ConnectionError("minute blocked")
+            return super().push2(path, params)
+
+        def push2his(self, path: str, params: dict[str, Any]) -> dict[str, Any]:
+            if daily_fails:
+                raise ConnectionError("daily blocked")
+            return super().push2his(path, params)
+
+    result = get_fund_flow(
+        "600000",
+        "2026-06-17",
+        eastmoney=PartialEastmoney(),
+    )
+
+    assert len(result.minute) == minute_count
+    assert result.daily is not None
+    assert len(result.daily) == daily_count
+    assert result.signal == signal
+    assert len(result.warnings) == int(minute_fails) + int(daily_fails)
+
+
 def test_dragon_tiger_accepts_prefixed_ticker_before_eastmoney_call() -> None:
     fake = FakeEastmoney()
 
-    result = get_dragon_tiger_board("SH600000", "2026-06-17", eastmoney=fake)
+    result = get_dragon_tiger_board("SH600000", "2026-06-16", eastmoney=fake)
 
     assert result.source == "eastmoney datacenter"
     assert isinstance(result.retrieved_at, dt.datetime)
@@ -161,6 +219,55 @@ def test_dragon_tiger_accepts_prefixed_ticker_before_eastmoney_call() -> None:
     filters = [call[2]["filter_str"] for call in fake.calls if call[0] == "datacenter"]
     assert all('SECURITY_CODE="600000"' in filter_text for filter_text in filters)
     assert all("SH600000" not in filter_text for filter_text in filters)
+
+
+def test_dragon_tiger_skips_seats_when_target_date_has_no_event() -> None:
+    class NoTargetEventEastmoney(FakeEastmoney):
+        def datacenter(self, report_name: str, **kwargs):
+            if report_name != "RPT_DAILYBILLBOARD_DETAILSNEW":
+                raise AssertionError("seat endpoints must not be called")
+            return []
+
+    result = get_dragon_tiger_board(
+        "600000",
+        "2026-06-17",
+        eastmoney=NoTargetEventEastmoney(),
+    )
+
+    assert result.events == []
+    assert result.buy_seats == []
+    assert result.sell_seats == []
+    assert result.raw["seat_filter"] is None
+
+
+@pytest.mark.parametrize(
+    "failed_report, missing_collection",
+    [
+        ("RPT_BILLBOARD_DAILYDETAILSBUY", "buy_seats"),
+        ("RPT_BILLBOARD_DAILYDETAILSSELL", "sell_seats"),
+    ],
+)
+def test_dragon_tiger_published_event_survives_seat_failure(
+    failed_report,
+    missing_collection,
+) -> None:
+    class FailingSeatEastmoney(FakeEastmoney):
+        def datacenter(self, report_name: str, **kwargs):
+            if report_name == failed_report:
+                raise ConnectionError(f"{report_name} blocked")
+            return super().datacenter(report_name, **kwargs)
+
+    result = get_dragon_tiger_board(
+        "600000",
+        "2026-06-16",
+        eastmoney=FailingSeatEastmoney(),
+    )
+
+    assert len(result.events) == 1
+    assert getattr(result, missing_collection) == []
+    assert len(result.warnings) == 1
+    assert "seats unavailable" in result.warnings[0]
+    assert result.institution_flow is None
 
 
 def test_lockup_expiry_accepts_prefixed_ticker() -> None:

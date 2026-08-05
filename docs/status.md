@@ -61,6 +61,7 @@
 - Order-book independent review passed revision 3 with no blocking findings.
 - Order-book final regression passed 551 tests with 7 skips in 133.26 seconds; full docs contract and both repository diff checks passed.
 - Order-book live evidence for 600809 returned five bids and five asks in lots at vendor time `20260804161500`; duplicate closing timestamps produced no changes and `exact_cancellation_available` remained false.
+- Buyer-exhaustion resilience developer verification passed 161 focused data/API/CLI/MCP tests and 12 downstream analysis tests. `wildman-daily-review` quick validation passed after enabling Python UTF-8 mode; the first invocation was blocked only by the validator process using the Windows GBK default for a UTF-8 Skill file.
 
 ## Remaining Gaps
 
@@ -71,3 +72,4 @@
 - The f164 plan and active index now agree that implementation is complete and awaiting archive.
 - Fine-grained industries absent from the official f164 industry universe still depend on push2his or a prior valid cache; no parent-industry value is substituted.
 - Order-book exact cancellations, hidden liquidity, order identity, and historical intraday depth before collection remain unavailable by design.
+- Buyer-exhaustion resilience revision 4 passes 602 package tests with 7 skips, 16 downstream analysis tests, Skill validation, the full docs contract, strict OpenSpec validation, and live 600809/002230 smokes. Current-revision Developer ownership and independent no-blocker review remain pending because the host collaboration dispatch interface is not accepting another Agent call.

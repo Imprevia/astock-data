@@ -37,6 +37,17 @@ python -m astock_data.cli sector-fund-flow-history BK1036 --curr-date $today --d
 
 周末复盘最新交易日时，可用 Python API 的 `aggregate_only=True` 跳过逐板块历史请求。只有新浪上证指数最新K线日期与 `curr_date` 完全一致时才返回 f164 累计；日期不匹配或不可校验应保持空值和 warning。普通模式优先读取同日真实资金缓存，再降级到仅含行情字段的 THS 日K。
 
+买盘枯竭的快速市场上下文使用有界模式，不扫描全市场成交额：
+
+```powershell
+python -m astock_data.cli market-breadth --date 2026-08-05 --fast --format json
+python -m astock_data.cli stock-amount 600809 --days 30 --format json
+python -m astock_data.cli fund-flow 600809 --curr-date 2026-08-05 --format json
+python -m astock_data.cli concepts 600809 --format json
+```
+
+`market-breadth --fast` 的 `raw.fast` 必须为 `true`，`raw.market_amount` 必须为 `null` 并带跳过全市场成交额扫描的 warning。当天和历史日期都必须检查 `raw.snapshot_date_status=verified` 且 `raw.snapshot_date` 与目标日一致；否则整体状态为 `unavailable`。快速涨跌停单侧失败时 `limit_stats.status=partial` 且失败侧计数为 `null`，双侧失败时为 `unavailable` 和 `null/null`；Markdown/Text 输出也必须显示顶层状态、`limit_stats.status` 和不可用方向。东财 `clist` 缺少可信总数、总数与行数矛盾，或新浪行缺少代码/有效涨跌幅时必须 fallback 或降级。`fund-flow` 的分钟或日线端点单独失败时仍应以零退出码返回结构化部分结果，但历史分析只消费目标日精确匹配的日线记录。`dragon-tiger` 无目标日事件时不请求席位；事件已公布但席位端点失败时保留事件并按端点记录 warning。`concepts` 的行业、地域和概念/风格成员来自个股 `ssbk` 排名，不得从名称推测；只有显式空列表是成功空集合。
+
 历史全局快讯 smoke：
 
 ```powershell

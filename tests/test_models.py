@@ -20,6 +20,7 @@ from astock_data.models import (
     IndexSnapshot,
     IndicatorPoint,
     IndicatorResult,
+    KlineBar,
     NewsItem,
     NewsResult,
     LimitStats,
@@ -143,7 +144,34 @@ def test_market_breadth_models_serialize_to_json() -> None:
     assert dumped["source"] == "eastmoney+derived"
     assert dumped["indices"][0]["key"] == "sh"
     assert dumped["limit_stats"]["limit_down_count"] == 2
+    assert dumped["limit_stats"]["status"] == "available"
     assert dumped["board_ladders"]["3"][0]["boards"] == 3
+
+
+def test_limit_stats_preserve_unavailable_side_without_fabricating_zero() -> None:
+    stats = LimitStats(
+        limit_up_count=3,
+        limit_down_count=None,
+        status="partial",
+    )
+
+    assert stats.limit_up_count == 3
+    assert stats.limit_down_count is None
+    assert stats.status == "partial"
+
+
+def test_kline_bar_additive_evidence_metrics_are_optional() -> None:
+    bare = KlineBar(date="2026-08-05")
+    enriched = KlineBar(
+        date="2026-08-05",
+        change_pct=9.98,
+        turnover_pct=12.34,
+    )
+
+    assert bare.change_pct is None
+    assert bare.turnover_pct is None
+    assert enriched.change_pct == 9.98
+    assert enriched.turnover_pct == 12.34
 
 
 def test_fundamentals_models_serialize_to_json() -> None:

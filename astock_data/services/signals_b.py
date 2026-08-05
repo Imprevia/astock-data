@@ -281,16 +281,20 @@ def get_concept_blocks(
         block = _concept_block(raw)
         if block is None:
             continue
-        name = block.name
-        if "地域" in name or name.endswith("省") or name.endswith("市"):
+        direction = str(raw.get("direction") or "")
+        if direction == "region":
             regions.append(block)
-        elif "行业" in name or "申万" in name or "证监会" in name:
+        elif direction == "industry":
             industries.append(block)
-        else:
+        elif direction == "concept":
             concepts.append(block)
+        else:
+            raise DataSourceError(
+                f"Unknown normalized concept direction: {direction or '<empty>'}"
+            )
 
     return ConceptBlocksResult(
-        source="eastmoney slist",
+        source="eastmoney core-conception",
         retrieved_at=now,
         ticker=resolved.code,
         name=resolved.name,
@@ -314,30 +318,43 @@ def get_fund_flow(
     client = _eastmoney_client(eastmoney, settings)
     secid = _secid(resolved.code)
     now = _now_utc()
-    minute_payload = client.push2(
-        PUSH2_FFLOW_KLINE_PATH,
-        {
-            "secid": secid,
-            "klt": 1,
-            "fields1": "f1,f2,f3,f7",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57",
-        },
-    )
-    minute = _flow_rows(_payload_klines(minute_payload))
-
-    daily: list[FundFlowRow] | None = None
-    if include_history:
-        history_payload = client.push2his(
-            PUSH2HIS_FFLOW_DAYKLINE_PATH,
+    warnings: list[str] = []
+    try:
+        minute_payload = client.push2(
+            PUSH2_FFLOW_KLINE_PATH,
             {
                 "secid": secid,
-                "lmt": 20,
-                "klt": 101,
+                "klt": 1,
                 "fields1": "f1,f2,f3,f7",
                 "fields2": "f51,f52,f53,f54,f55,f56,f57",
             },
         )
-        daily = _flow_rows(_payload_klines(history_payload))
+        minute = _flow_rows(_payload_klines(minute_payload))
+    except Exception as exc:  # noqa: BLE001 - capability failure is isolated
+        minute = []
+        warnings.append(
+            f"minute fund-flow unavailable: {type(exc).__name__}: {exc}"
+        )
+
+    daily: list[FundFlowRow] | None = None
+    if include_history:
+        try:
+            history_payload = client.push2his(
+                PUSH2HIS_FFLOW_DAYKLINE_PATH,
+                {
+                    "secid": secid,
+                    "lmt": 20,
+                    "klt": 101,
+                    "fields1": "f1,f2,f3,f7",
+                    "fields2": "f51,f52,f53,f54,f55,f56,f57",
+                },
+            )
+            daily = _flow_rows(_payload_klines(history_payload))
+        except Exception as exc:  # noqa: BLE001 - capability failure is isolated
+            daily = []
+            warnings.append(
+                f"daily fund-flow unavailable: {type(exc).__name__}: {exc}"
+            )
 
     return FundFlowResult(
         source="eastmoney push2",
@@ -347,6 +364,7 @@ def get_fund_flow(
         minute=minute,
         daily=daily,
         signal=_fund_signal(minute),
+        warnings=warnings,
         raw={"curr_date": curr_date, "secid": secid},
     )
 
@@ -416,6 +434,8 @@ def get_dragon_tiger_board(
     eastmoney: EastmoneyClient | None = None,
     settings: AStockSettings | None = None,
 ) -> DragonTigerResult:
+    """Keep target-date event facts independent from optional seat endpoints."""
+
     resolved = resolve_ticker(ticker)
     client = _eastmoney_client(eastmoney, settings)
     now = _now_utc()
@@ -433,31 +453,62 @@ def get_dragon_tiger_board(
         sort_columns="TRADE_DATE",
         sort_types="-1",
     )
-    latest_date = str(event_rows[0].get("TRADE_DATE", ""))[:10] if event_rows else trade_date
-    seat_filter = f"(TRADE_DATE='{latest_date}')(SECURITY_CODE=\"{resolved.code}\")"
-    buy_rows = client.datacenter(
-        "RPT_BILLBOARD_DAILYDETAILSBUY",
-        filter_str=seat_filter,
-        page_size=10,
-        sort_columns="BUY",
-        sort_types="-1",
-    )
-    sell_rows = client.datacenter(
-        "RPT_BILLBOARD_DAILYDETAILSSELL",
-        filter_str=seat_filter,
-        page_size=10,
-        sort_columns="SELL",
-        sort_types="-1",
-    )
+    target_event_rows = [
+        row
+        for row in event_rows
+        if str(row.get("TRADE_DATE") or "")[:10] == trade_date
+    ]
+    seat_filter = None
+    buy_rows: list[dict[str, Any]] = []
+    sell_rows: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    buy_seats_available = False
+    sell_seats_available = False
+    if target_event_rows:
+        seat_filter = (
+            f"(TRADE_DATE='{trade_date}')"
+            f"(SECURITY_CODE=\"{resolved.code}\")"
+        )
+        try:
+            buy_rows = client.datacenter(
+                "RPT_BILLBOARD_DAILYDETAILSBUY",
+                filter_str=seat_filter,
+                page_size=10,
+                sort_columns="BUY",
+                sort_types="-1",
+            )
+            buy_seats_available = True
+        except Exception as exc:  # noqa: BLE001 - published event remains factual
+            warnings.append(
+                f"dragon-tiger buy seats unavailable: {type(exc).__name__}: {exc}"
+            )
+        try:
+            sell_rows = client.datacenter(
+                "RPT_BILLBOARD_DAILYDETAILSSELL",
+                filter_str=seat_filter,
+                page_size=10,
+                sort_columns="SELL",
+                sort_types="-1",
+            )
+            sell_seats_available = True
+        except Exception as exc:  # noqa: BLE001 - published event remains factual
+            warnings.append(
+                f"dragon-tiger sell seats unavailable: {type(exc).__name__}: {exc}"
+            )
     return DragonTigerResult(
         source="eastmoney datacenter",
         retrieved_at=now,
+        warnings=warnings,
         ticker=resolved.code,
         name=resolved.name,
         events=[_dragon_event(row) for row in event_rows],
         buy_seats=[_dragon_seat(row) for row in buy_rows],
         sell_seats=[_dragon_seat(row) for row in sell_rows],
-        institution_flow=_institution_flow(buy_rows, sell_rows),
+        institution_flow=(
+            _institution_flow(buy_rows, sell_rows)
+            if buy_seats_available and sell_seats_available
+            else None
+        ),
         raw={"event_filter": filter_str, "seat_filter": seat_filter},
     )
 

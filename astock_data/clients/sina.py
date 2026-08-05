@@ -7,6 +7,7 @@ GBK news HTML) into plain dicts/lists. Clients do ONLY transport + parsing.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from typing import Optional
@@ -253,14 +254,21 @@ class SinaClient:
             raise DataSourceError("Sina index quote returned no usable rows")
         return result
 
-    def market_page(self, *, page: int = 1, page_size: int = 80) -> list[dict]:
+    def market_page(
+        self,
+        *,
+        page: int = 1,
+        page_size: int = 80,
+        sort_field: str = "symbol",
+        ascending: bool = True,
+    ) -> list[dict]:
         """Fetch one Sina A-share market page normalized for limit statistics."""
 
         params = {
             "page": str(page),
             "num": str(page_size),
-            "sort": "symbol",
-            "asc": "1",
+            "sort": sort_field,
+            "asc": "1" if ascending else "0",
             "node": "hs_a",
             "symbol": "",
             "_s_r_a": "page",
@@ -268,7 +276,7 @@ class SinaClient:
         data = self._get_json(self.MARKET_CENTER_URL, params=params)
         if not isinstance(data, list):
             return []
-        return self.normalize_market_rows(item for item in data if isinstance(item, Mapping))
+        return self.normalize_market_rows(data)
 
     def market_all(self, *, page_size: int = 80, max_pages: int = 80) -> list[dict]:
         """Fetch Sina A-share market rows with a conservative page cap."""
@@ -307,20 +315,41 @@ class SinaClient:
         """Normalize Sina market-center rows into quote-row shape."""
 
         normalized: list[dict] = []
-        for row in rows:
+        for index, row in enumerate(rows):
             if not isinstance(row, Mapping):
-                continue
+                raise DataSourceError(f"Sina market row {index} is not an object")
             code = str(row.get("code") or row.get("symbol") or "").strip()
             if code.startswith(("sh", "sz", "bj")):
                 code = code[2:]
             if not code:
-                continue
+                raise DataSourceError(f"Sina market row {index} is missing a stock code")
+            if len(code) != 6 or not code.isdigit():
+                raise DataSourceError(f"Sina market row {index} has an invalid stock code")
+            change_value = (
+                row.get("changepercent")
+                if "changepercent" in row
+                else row.get("change_pct")
+            )
+            if change_value in (None, "", "-"):
+                raise DataSourceError(
+                    f"Sina market row {index} has an invalid change percentage"
+                )
+            try:
+                change_pct = float(change_value)
+            except (TypeError, ValueError) as exc:
+                raise DataSourceError(
+                    f"Sina market row {index} has an invalid change percentage"
+                ) from exc
+            if not math.isfinite(change_pct):
+                raise DataSourceError(
+                    f"Sina market row {index} has an invalid change percentage"
+                )
             normalized.append(
                 {
                     "code": code,
                     "name": str(row.get("name") or "").strip(),
                     "close": _to_float(row.get("trade") or row.get("price")),
-                    "change_pct": _to_float(row.get("changepercent") or row.get("change_pct")),
+                    "change_pct": change_pct,
                     "volume": _to_float(row.get("volume")),
                     "amount": _to_float(row.get("amount")),
                     "ticktime": str(row.get("ticktime") or "").strip() or None,

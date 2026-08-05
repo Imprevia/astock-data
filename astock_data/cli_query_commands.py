@@ -77,6 +77,11 @@ def register_query_commands(app: typer.Typer) -> None:
     @app.command("market-breadth", help="Fetch market breadth: indices, limit counts, and board ladders.")
     def market_breadth(
         date: Optional[str] = typer.Option(None, "--date", help="Trading date YYYY-MM-DD."),
+        fast: bool = typer.Option(
+            False,
+            "--fast",
+            help="Use bounded limit-stat sources and skip the full-market amount scan.",
+        ),
         format: Optional[str] = cli_runtime._FORMAT_OPT,
         no_cache: Optional[bool] = cli_runtime._NO_CACHE_OPT,
     ) -> None:
@@ -84,7 +89,7 @@ def register_query_commands(app: typer.Typer) -> None:
 
         cli_runtime._apply_global_options(format=format, no_cache=no_cache)
         cli_runtime._disable_cache()
-        cli_runtime._run(lambda: api.get_market_breadth(date or ""))
+        cli_runtime._run(lambda: api.get_market_breadth(date or "", fast=fast))
 
     @app.command(help="Fetch composite fundamentals snapshot for a symbol.")
     def fundamentals(

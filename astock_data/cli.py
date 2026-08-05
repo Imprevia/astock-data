@@ -260,6 +260,11 @@ def indicator(
 @app.command("market-breadth", help="Fetch market breadth: indices, limit counts, and board ladders.")
 def market_breadth(
     date: Optional[str] = typer.Option(None, "--date", help="Trading date YYYY-MM-DD."),
+    fast: bool = typer.Option(
+        False,
+        "--fast",
+        help="Use bounded limit-stat sources and skip the full-market amount scan.",
+    ),
     format: Optional[str] = _FORMAT_OPT,
     no_cache: Optional[bool] = _NO_CACHE_OPT,
 ) -> None:
@@ -267,7 +272,7 @@ def market_breadth(
 
     _apply_global_options(format=format, no_cache=no_cache)
     _disable_cache()
-    _run(lambda: api.get_market_breadth(date or ""))
+    _run(lambda: api.get_market_breadth(date or "", fast=fast))
 
 
 # ---------------------------------------------------------------------------

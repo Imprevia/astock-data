@@ -6,7 +6,7 @@ Verification
 
 ## Status
 
-The completed retrieval plans remain awaiting archive. Buyer-exhaustion data resilience remains in specification; free order-book snapshot evidence is complete and awaiting archive.
+The completed retrieval plans remain awaiting archive. Buyer-exhaustion data resilience is approved and in implementation; free order-book snapshot evidence is complete and awaiting archive.
 
 ## Acceptance
 
@@ -15,7 +15,7 @@ The completed retrieval plans remain awaiting archive. Buyer-exhaustion data res
 
 ## Completion Evidence
 
-- In specification: [Improve Buyer Exhaustion Data Resilience](improve-buyer-exhaustion-data-resilience.md)
+- In implementation: [Improve Buyer Exhaustion Data Resilience](improve-buyer-exhaustion-data-resilience.md)
 - Completed, awaiting archive: [Add Order Book Snapshot Evidence](add-order-book-snapshot-evidence.md)
 - Completed: [Expand Sector ETF Coverage](expand-sector-etf-coverage.md)
 - Completed: [Restore Latest-Trade-Day Sector Aggregate](restore-latest-trade-day-sector-aggregate.md)
@@ -26,7 +26,7 @@ The completed retrieval plans remain awaiting archive. Buyer-exhaustion data res
 
 ## Remaining Gaps
 
-- The buyer-exhaustion resilience change requires OpenSpec validation and explicit approval before implementation.
+- The buyer-exhaustion resilience change is validated and approved; implementation, review, regression, docs-contract, and live evidence remain.
 - The order-book snapshot change passed focused checks, independent review, full regression, docs contract, and a live 600809 smoke; exact cancellations and historical intraday backfill remain unavailable.
 - Seven fine-grained sectors still lack a defensible representative ETF and remain explicitly degraded.
 - The market amount snapshot fallback and latest-trading-day aggregate restoration are implemented; the shared full suite and docs contract pass.

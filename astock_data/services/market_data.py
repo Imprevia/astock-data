@@ -113,6 +113,8 @@ def _to_kline_bar(row: dict[str, Any]) -> KlineBar:
         close=row.get("close"),
         volume=row.get("volume"),
         amount=row.get("amount"),
+        change_pct=row.get("change_pct"),
+        turnover_pct=row.get("turnover_pct"),
     )
 
 
@@ -169,45 +171,59 @@ def get_stock_amount(ticker: str, days: int = 10) -> StockAmountResult:
     """个股近 days 日 K 线（含成交额）。"""
     from astock_data.clients import eastmoney as _em
 
-    market = "sh" if str(ticker).startswith("6") else "sz"
-    resolved = Ticker(code=ticker, market=market, name=None)
+    resolved = resolve_ticker(ticker)
     bars: list[KlineBar] = []
     warnings: list[str] = []
+    source = "eastmoney"
+    secid = f"1.{resolved.code}" if str(resolved.code).startswith("6") else f"0.{resolved.code}"
     try:
-        resolved = resolve_ticker(ticker)
-    except Exception as exc:  # noqa: BLE001 - resolution errors degrade to empty result
+        rows = _em.fetch_kline(secid, days=days, client=_get_fast_em_client())
+        bars = [_to_kline_bar(row) for row in rows]
+        if not bars:
+            raise DataSourceError("Eastmoney push2his returned no stock amount bars")
+    except Exception as exc:  # noqa: BLE001 - upstream errors trigger fallback
         warnings.append(f"获取个股成交额失败(ticker={ticker}): {type(exc).__name__}: {exc}")
-    else:
-        secid = f"1.{resolved.code}" if str(resolved.code).startswith("6") else f"0.{resolved.code}"
         try:
-            rows = _em.fetch_kline(secid, days=days, client=_get_fast_em_client())
-            bars = [_to_kline_bar(row) for row in rows]
-        except Exception as exc:  # noqa: BLE001 - upstream errors trigger fallback
-            warnings.append(f"获取个股成交额失败(ticker={ticker}): {type(exc).__name__}: {exc}")
-            try:
-                settings = get_settings()
-                quote = TencentClient(
-                    timeout=settings.request_timeout,
-                    settings=settings,
-                ).quote([resolved.code])
-                amount_wan = quote.get(resolved.code, {}).get("amount_wan")
-                if amount_wan is not None:
-                    bars = [
-                        KlineBar(
-                            date=_now_utc().date().isoformat(),
-                            amount=float(amount_wan) * 10_000,
-                        )
-                    ]
-                    warnings.append(
-                        "used Tencent quote for stock amount (push2his blocked)"
-                    )
-            except Exception as tencent_exc:  # noqa: BLE001 - fallback errors degrade to empty result
-                warnings.append(
-                    "腾讯个股成交额降级失败"
-                    f"(ticker={ticker}): {type(tencent_exc).__name__}: {tencent_exc}"
+            settings = get_settings()
+            quote = TencentClient(
+                timeout=settings.request_timeout,
+                settings=settings,
+            ).quote([resolved.code])
+            quote_row = quote.get(resolved.code, {})
+            amount_wan = quote_row.get("amount_wan")
+            if amount_wan is None:
+                raise ValueError("Tencent quote did not include stock amount")
+            vendor_timestamp = str(quote_row.get("vendor_timestamp") or "")
+            if len(vendor_timestamp) < 8 or not vendor_timestamp[:8].isdigit():
+                raise ValueError("Tencent quote did not include a valid vendor date")
+            quote_date = dt.datetime.strptime(
+                vendor_timestamp[:8], "%Y%m%d"
+            ).date().isoformat()
+            bars = [
+                KlineBar(
+                    date=quote_date,
+                    open=quote_row.get("open"),
+                    high=quote_row.get("high"),
+                    low=quote_row.get("low"),
+                    close=quote_row.get("price"),
+                    volume=quote_row.get("volume"),
+                    amount=float(amount_wan) * 10_000,
+                    change_pct=quote_row.get("change_pct"),
+                    turnover_pct=quote_row.get("turnover_pct"),
                 )
+            ]
+            source = "tencent"
+            warnings.append(
+                "used matching-date Tencent quote K-line metrics "
+                "because Eastmoney push2his was unavailable"
+            )
+        except Exception as tencent_exc:  # noqa: BLE001 - fallback errors degrade to empty result
+            warnings.append(
+                "腾讯个股成交额降级失败"
+                f"(ticker={ticker}): {type(tencent_exc).__name__}: {tencent_exc}"
+            )
     return StockAmountResult(
-        source="eastmoney",
+        source=source,
         retrieved_at=_now_utc(),
         ticker=resolved,
         name=resolved.name,

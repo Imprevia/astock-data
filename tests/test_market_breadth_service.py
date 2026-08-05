@@ -6,9 +6,24 @@ import pytest
 
 from astock_data.errors import DataSourceError, MarketValidationError
 from astock_data.models import OHLCVBar, StockDataResult, Ticker
+from astock_data.services import market_breadth as market_breadth_service
 from astock_data.services.market_breadth import get_market_breadth
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def _freeze_current_session(monkeypatch) -> None:
+    monkeypatch.setattr(
+        market_breadth_service,
+        "_local_today",
+        lambda: dt.date(2026, 6, 17),
+    )
+    monkeypatch.setattr(
+        market_breadth_service,
+        "_verify_snapshot_date",
+        lambda _sina, target, _warnings: (target.isoformat(), "verified"),
+    )
 
 
 class EmptyTencent:
@@ -263,7 +278,9 @@ def test_partial_result_skips_board_ladders_when_rows_fail(monkeypatch) -> None:
     assert result.raw["sources"]["limit_stats"] is None
     assert result.raw["sources"]["board_ladders"] is None
     assert result.board_ladders == {}
-    assert result.limit_stats.limit_up_count == 0
+    assert result.limit_stats.status == "unavailable"
+    assert result.limit_stats.limit_up_count is None
+    assert result.limit_stats.limit_down_count is None
     assert any("board_ladders skipped" in warning for warning in result.warnings)
 
 
